@@ -9,8 +9,8 @@ import { all, one, run, searchMemory, searchKb, addMemory } from './store.ts';
 import { hub, httpError } from './hub.ts';
 import { indexProject, buildPack, summarize } from './context.ts';
 
-const WEB = fileURLToPath(new URL('../web/', import.meta.url));
-const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const WEB = fileURLToPath(new URL('../web/dist/', import.meta.url)); // built by `npm run build`
+const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 
 const safeEq = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 const tokenOf = (req: IncomingMessage) => {
@@ -84,9 +84,12 @@ async function serveStatic(u: URL, res: ServerResponse) {
   if (!f.startsWith(WEB.endsWith(sep) ? WEB : WEB + sep)) throw httpError(403, 'interdit');
   try {
     const data = await readFile(f);
-    res.writeHead(200, { 'content-type': TYPES[extname(f)] ?? 'application/octet-stream', 'cache-control': 'no-cache' });
+    res.writeHead(200, { 'content-type': TYPES[extname(f)] ?? 'application/octet-stream', 'cache-control': u.pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache' });
     res.end(data);
-  } catch { throw httpError(404, 'introuvable'); }
+  } catch {
+    if (u.pathname === '/') throw httpError(503, 'Interface non compilée : lance `npm run build`.');
+    throw httpError(404, 'introuvable');
+  }
 }
 
 const json = (res: ServerResponse, status: number, body: any) => {

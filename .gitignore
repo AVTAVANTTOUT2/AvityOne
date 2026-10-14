@@ -2,3 +2,4 @@ node_modules/
 .claude/
 *.db
 *.db-*
+web/dist/

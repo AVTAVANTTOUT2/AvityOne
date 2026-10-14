@@ -1,18 +1,39 @@
 {
   "name": "avityone",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Plateforme personnelle d'orchestration d'agents de code (Claude Code, Codex, Cursor, OpenCode) avec contexte et mémoire partagés",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node src/server.ts",
     "dev": "node --watch src/server.ts",
+    "dev:web": "vite web",
+    "build": "vite build web",
     "test": "node --test test/*.test.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit && tsc --noEmit -p web"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
-    "typescript": "^7.0.2"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "border-beam": "^1.4.1",
+    "bot-avatars": "^0.2.2",
+    "dompurify": "^3.4.17",
+    "img-fx": "^0.5.1",
+    "liquid-gooey": "^0.2.2",
+    "marked": "^18.1.1",
+    "metal-fx": "^2.0.11",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "thinking-orbs": "^0.3.2",
+    "three": "^0.186.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "voice-glow": "^0.3.0"
   }
 }

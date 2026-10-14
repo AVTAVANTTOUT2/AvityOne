@@ -4,6 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="$PWD"
 
+# Web UI: React + Vite, built here (dev dependencies only, the server itself has none).
+npm ci --no-audit --no-fund --loglevel=error
+npm run build --silent
+
 sed -e "s|@USER@|$USER|g" -e "s|@HOME@|$HOME|g" -e "s|@APP@|$APP|g" deploy/avityone.service \
   | sudo tee /etc/systemd/system/avityone.service >/dev/null
 
