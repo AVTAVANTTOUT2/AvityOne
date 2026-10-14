@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AvityOne</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 1l7 7-7 7-7-7z' fill='%237c9cff'/></svg>">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+</head>
+<body>
+  <form id="login" hidden>
+    <div class="brand big">◆ AvityOne</div>
+    <input id="token" type="password" placeholder="Token d'accès (~/.avityone/config.json)" autocomplete="current-password" required>
+    <button class="primary">Entrer</button>
+    <p id="loginErr" class="err"></p>
+  </form>
+
+  <div id="app" hidden>
+    <aside id="side">
+      <div class="brand">◆ AvityOne <button id="closeSide" class="icon only-mobile" title="Fermer">✕</button></div>
+      <div class="side-head"><span>Projets</span><button id="addProject" class="icon" title="Nouveau projet">＋</button></div>
+      <div id="projects" class="list"></div>
+      <div class="side-head"><span>Sessions</span><button id="newSession" class="icon" title="Nouvelle session">＋</button></div>
+      <div id="sessions" class="list grow"></div>
+      <div id="agents"></div>
+    </aside>
+
+    <main id="main">
+      <header id="head">
+        <button id="openSide" class="icon only-mobile" title="Menu">☰</button>
+        <div class="title"><div id="sessTitle">—</div><div id="sessMeta" class="muted"></div></div>
+        <div id="configs"></div>
+        <button id="reviewBtn" title="Revue du git diff par un autre modèle">Revue croisée</button>
+        <button id="sumBtn" title="Résumer la session et enrichir la mémoire">Résumer</button>
+        <button id="toggleRight" class="icon" title="Mémoire & contexte">◧</button>
+      </header>
+      <div id="feed"><div class="empty">Choisis ou crée une session pour commencer.</div></div>
+      <div id="composer">
+        <div id="execBar" hidden>
+          <span>📋 Plan prêt</span>
+          <select id="execAgent"></select>
+          <button id="execBtn" class="primary">Exécuter le plan</button>
+        </div>
+        <textarea id="input" rows="3" placeholder="Demande quelque chose…  @claude @codex @cursor @opencode pour forcer un agent, /plan pour planifier"></textarea>
+        <div class="row">
+          <select id="agentSel" title="Agent"></select>
+          <div class="seg" id="modeSeg">
+            <button data-mode="" class="on" title="Le routeur choisit">Auto</button>
+            <button data-mode="agent" title="Exécution avec outils">Agent</button>
+            <button data-mode="plan" title="Lecture seule, propose un plan">Plan</button>
+          </div>
+          <label class="chk" title="Approuver automatiquement les actions (sauf validation de plan)"><input type="checkbox" id="autoApprove" checked> auto</label>
+          <span id="status" class="muted"></span>
+          <button id="stopBtn" hidden>■ Stop</button>
+          <button id="sendBtn" class="primary">Envoyer ⏎</button>
+        </div>
+      </div>
+    </main>
+
+    <aside id="right" hidden>
+      <div class="tabs">
+        <button data-tab="memory" class="on">Mémoire</button>
+        <button data-tab="context">Contexte injecté</button>
+      </div>
+      <section id="tab-memory">
+        <input id="memQuery" type="search" placeholder="Chercher dans la mémoire et les docs…">
+        <div id="memStats" class="muted small"></div>
+        <form id="memAdd" class="row">
+          <select id="memKind"><option>decision</option><option>convention</option><option>pitfall</option><option selected>fact</option><option>todo</option></select>
+          <input id="memText" placeholder="Ajouter une connaissance durable…" required>
+        </form>
+        <div class="row"><button id="reindexBtn" class="small">Réindexer les docs du projet</button></div>
+        <div id="memList"></div>
+      </section>
+      <section id="tab-context" hidden>
+        <p class="muted small">Ce que reçoit un agent au démarrage d'une session (brief, git, mémoire, docs, sessions récentes).</p>
+        <input id="ctxQuery" type="search" placeholder="Simuler pour une demande…">
+        <pre id="ctxPreview"></pre>
+      </section>
+    </aside>
+  </div>
+
+  <dialog id="projDialog">
+    <form method="dialog" id="projForm">
+      <h3>Nouveau projet</h3>
+      <input name="name" placeholder="nom (ex. avity-site)" pattern="[\w.\-]{1,64}" required>
+      <input name="path" placeholder="chemin absolu existant (optionnel)">
+      <input name="git" placeholder="ou URL git à cloner (optionnel)">
+      <p class="muted small">Sans chemin ni URL, un dossier vide est créé dans ~/projects. Idéal aussi pour un projet « vie » (notes, admin, idées).</p>
+      <p id="projErr" class="err"></p>
+      <div class="row end"><button value="cancel" formnovalidate>Annuler</button><button class="primary" value="ok">Créer</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
