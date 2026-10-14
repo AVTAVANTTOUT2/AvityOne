@@ -1,7 +1,7 @@
 # Recherche open source : briques réutilisables
 
 Relevé via l'API GitHub le **2026-10-14** (étoiles, dernier push, licence). Légende :
-**✅ utilisé** dans AvityOne · **🔜 à intégrer** (feuille de route) · **💡 inspiration** (patterns repris, pas de code) · **⛔ écarté**.
+**✅ utilisé** dans AvityOne · **🔜 à intégrer** ([feuille de route](../ROADMAP.md)) · **💡 inspiration** (patterns repris, pas de code) · **⛔ écarté**.
 
 ## 1. Intégration des agents : le choix structurant
 

@@ -23,7 +23,7 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
                   └───────── serveur MCP « avity » : mémoire partagée par tous ─────────┘
 ```
 
-## Ce que fait le prototype (v0.1)
+## Ce que fait le prototype (v0.2)
 
 | Fonction | Détail |
 |---|---|
@@ -117,13 +117,10 @@ Node 24 exécute le TypeScript du serveur directement (type stripping) : pas de 
 | [`src/server.ts`](src/server.ts) | API HTTP, SSE, UI statique, auth |
 | [`web/src/`](web/src/) | UI React (Vite) : `App` (shell), `Feed` (conversation), `Composer` (dock), `Sidebar`, `Panel`, `brand` (logo, couvertures, identités d'agents), `icons`, `ui` (primitives) |
 
-## Feuille de route
+## Feuille de route et versions
 
-Recherche GitHub et choix de briques : [docs/RESEARCH.md](docs/RESEARCH.md).
-
-1. ✅ **Worktrees git par session** et exécution parallèle (un plan découpé en tâches réparties sur plusieurs agents, puis merge et revue). Inspiré de vibe-kanban et claude-squad. Suite possible : regrouper les tâches par fichiers touchés plutôt que par ordre, résolution de conflits assistée par un agent.
-2. **Recherche hybride** : embeddings via `sqlite-vec` à côté de FTS5, plus un index sémantique du code.
-3. **Consolidation de la mémoire** façon mem0 (mise à jour et suppression des faits contradictoires), export markdown versionnable.
-4. **Routeur LLM**, en plus des règles, avec retour d'expérience (quel agent réussit quel type de tâche).
-5. **code-server** à côté pour l'édition manuelle, HTTPS et Tailscale, PWA mobile, traces Langfuse.
-6. Arrêt des processus d'agents inactifs, pièces jointes et images, slash-commands ACP.
+| Document | Contenu |
+|---|---|
+| [ROADMAP.md](ROADMAP.md) | Fonctions prévues par domaine : agents et routage, plans et orchestration, git et fusion, environnement de développement, mémoire, projets, sessions, multimodalité, notifications, mobile, administration, CLI. |
+| [CHANGELOG.md](CHANGELOG.md) | Ce qui a été livré, version par version. |
+| [docs/RESEARCH.md](docs/RESEARCH.md) | Recherche GitHub et choix des briques open source. |
