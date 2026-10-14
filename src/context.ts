@@ -59,9 +59,10 @@ export function gitState(cwd: string): string {
     .filter(Boolean).join('\n');
 }
 
-export function gitDiff(cwd: string, max = 60_000): string {
-  const d = git(cwd, ['diff', 'HEAD']) || git(cwd, ['diff']);
-  const untracked = git(cwd, ['ls-files', '--others', '--exclude-standard']).trim();
+/** Working-tree diff (with untracked files), or the diff of a commit range such as `base..HEAD`. */
+export function gitDiff(cwd: string, range = '', max = 60_000): string {
+  const d = range ? git(cwd, ['diff', range]) : git(cwd, ['diff', 'HEAD']) || git(cwd, ['diff']);
+  const untracked = range ? '' : git(cwd, ['ls-files', '--others', '--exclude-standard']).trim();
   const out = d + (untracked ? `\n# Fichiers non suivis:\n${untracked}` : '');
   return out.length > max ? out.slice(0, max) + `\n… (diff tronqué, ${out.length} caractères)` : out;
 }
@@ -77,12 +78,13 @@ export function mcpServersFor(projectId: number): McpServer[] {
 
 const readIf = (f: string) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
 
-/** The context pack injected as the first message of every fresh agent session. */
-export function buildPack(p: Row, sessionId: string, prompt: string, handoff = ''): { text: string; stats: string } {
+/** The context pack injected as the first message of every fresh agent session. `cwd` is the session's worktree, if any. */
+export function buildPack(p: Row, sessionId: string, prompt: string, handoff = '', cwd = p.path): { text: string; stats: string } {
   const parts: string[] = [];
+  if (cwd !== p.path) parts.push(`## Worktree isolé\nTu travailles dans ${cwd}, un worktree git sur sa propre branche. Ne modifie rien en dehors : AvityOne mergera ta branche.`);
   const brief = readIf(join(p.path, '.avity/brief.md')).trim();
   if (brief) parts.push(`## Brief projet\n${brief.slice(0, 3000)}`);
-  const gs = gitState(p.path);
+  const gs = gitState(cwd);
   if (gs) parts.push(`## État git\n${gs}`);
   const mems = searchMemory(p.id, prompt, 10);
   if (mems.length) parts.push(`## Mémoire projet pertinente\n${mems.map((m) => `- [${m.kind}] ${m.text}`).join('\n')}`);
@@ -109,6 +111,7 @@ export function transcript(sessionId: string, max = 12_000): string {
     if (it.type === 'tool') return `  · outil ${it.kind ?? ''}: ${it.title} (${it.status})`;
     if (it.type === 'plan') return `  · plan: ${it.entries.map((e: Row) => `[${e.status}] ${e.content}`).join(' | ')}`;
     if (it.type === 'review') return `[revue ${it.agent}] ${it.text}`;
+    if (it.type === 'parallel') return `  · exécution parallèle: ${it.children.map((c: Row) => `${c.task} → ${c.agent} (${c.status})`).join(' | ')}`;
     return '';
   }).filter(Boolean).join('\n');
   return lines.length > max ? lines.slice(0, max * 0.25) + '\n…\n' + lines.slice(-max * 0.75) : lines;

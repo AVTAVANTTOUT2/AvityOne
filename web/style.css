@@ -75,7 +75,8 @@ details.thought summary { cursor: pointer; }
 .tool summary .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12.5px; }
 .tool .body { padding: 0 10px 10px; display: grid; gap: 8px; }
 .st { font-size: 11px; }
-.st.completed { color: var(--green); } .st.failed { color: var(--red); } .st.in_progress, .st.pending, .st.running { color: var(--amber); }
+.st.completed, .st.done, .st.merged { color: var(--green); } .st.failed, .st.error, .st.conflict { color: var(--red); }
+.st.in_progress, .st.pending, .st.running, .st.waiting { color: var(--amber); }
 .diff { font: 12px/1.45 var(--mono); background: #0a0b0f; border: 1px solid var(--border); border-radius: 8px; overflow: auto; max-height: 420px; }
 .diff .path { padding: 5px 10px; border-bottom: 1px solid var(--border); color: var(--muted); }
 .diff div.l { white-space: pre; padding: 0 10px; }
@@ -85,10 +86,16 @@ details.thought summary { cursor: pointer; }
 .card h4 { margin: 0 0 8px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
 .card.perm { border-color: #5b4a1c; background: #191610; }
 .card.review { border-color: #2c3a5c; }
+.card.par { border-color: #2c4a3a; }
+.kids { display: grid; gap: 4px; margin-bottom: 8px; }
+.kid { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; font-size: 13px; }
+.kid:hover { border-color: #3a404c; }
+.kid .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kid .conf { width: 100%; color: var(--red); font-size: 12px; }
 .plan ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 3px; }
 .plan li.completed { color: var(--muted); text-decoration: line-through; }
 .plan li.in_progress { color: var(--amber); }
-.info { color: var(--muted); font-size: 12px; margin: 6px auto; }
+.info { color: var(--muted); font-size: 12px; margin: 6px auto; white-space: pre-wrap; }
 .error { color: var(--red); font-size: 13px; margin: 8px auto; white-space: pre-wrap; }
 .end { border-top: 1px dashed var(--border); margin: 16px auto 4px; font-size: 11px; color: #586070; padding-top: 3px; }
 

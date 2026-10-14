@@ -32,6 +32,12 @@ export const all = (sql: string, ...p: any[]) => db.prepare(sql).all(...p) as Ro
 export const one = (sql: string, ...p: any[]) => db.prepare(sql).get(...p) as Row | undefined;
 export const run = (sql: string, ...p: any[]) => db.prepare(sql).run(...p);
 
+// Columns added after v0.1, created in place so existing databases keep working.
+const cols = all('PRAGMA table_info(sessions)').map((c) => c.name);
+for (const [c, def] of [['parent_id', 'TEXT'], ['isolated', 'INTEGER DEFAULT 0'], ['worktree', 'TEXT']]) {
+  if (!cols.includes(c)) db.exec(`ALTER TABLE sessions ADD COLUMN ${c} ${def}`);
+}
+
 const STOP = new Set(('les des une est pour avec dans que qui sur pas plus par mais ont sont aux ces cette tout tous fait faire peux veux '
   + 'comment quoi quel quelle nous vous ils elles mon mes ton tes son ses leur leurs etre avoir the and for with this that from are '
   + 'you your can how what why have has was will not but all any use using into').split(' '));

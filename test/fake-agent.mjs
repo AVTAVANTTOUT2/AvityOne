@@ -1,5 +1,7 @@
 // Scripted ACP agent for tests: streams text, makes an edit that needs permission, emits a plan.
+// The plan echoes the prompt's numbered lines; a parallel sub-task (« ## Ta tâche ») writes each `write:<file>` it names.
 import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
 
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\n');
 const up = (update) => send({ method: 'session/update', params: { sessionId: 'fake-1', update } });
@@ -24,14 +26,17 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       const text = m.params.prompt.map((b) => b.text).join('\n');
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `mode=${mode} ` } });
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `ctx=${text.includes('<avity-context>')}` } });
-      up({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Edit a.txt', kind: 'edit', status: 'pending' });
+      const kind = m.params.prompt.at(-1).text.includes('exitplan') ? 'switch_mode' : 'edit'; // « exitplan »: leave plan mode like Claude's ExitPlanMode
+      up({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Edit a.txt', kind, status: 'pending' });
       const id = nextId++;
-      send({ id, method: 'session/request_permission', params: { sessionId: 'fake-1', toolCall: { toolCallId: 't1', kind: 'edit', title: 'Edit a.txt' },
+      send({ id, method: 'session/request_permission', params: { sessionId: 'fake-1', toolCall: { toolCallId: 't1', kind, title: 'Edit a.txt' },
         options: [{ optionId: 'yes', name: 'Allow', kind: 'allow_once' }, { optionId: 'no', name: 'Reject', kind: 'reject_once' }] } });
       const res = await new Promise((r) => waiting.set(id, r));
       const ok = res.outcome.optionId === 'yes';
+      if (ok) for (const [, f] of (text.split('## Ta tâche')[1] ?? '').matchAll(/write:(\S+)/g)) writeFileSync(f, `${f} par ${process.pid}\n`);
       up({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: ok ? 'completed' : 'failed', content: ok ? [{ type: 'diff', path: 'a.txt', oldText: 'a', newText: 'b' }] : [] });
-      up({ sessionUpdate: 'plan', entries: [{ content: 'step', priority: 'high', status: 'completed' }] });
+      const steps = [...text.matchAll(/^\d+\. (.+)$/gm)].map((x) => x[1]);
+      up({ sessionUpdate: 'plan', entries: (steps.length ? steps : ['step']).map((content) => ({ content, priority: 'high', status: 'completed' })) });
       return reply({ stopReason: 'end_turn' });
     }
     default:

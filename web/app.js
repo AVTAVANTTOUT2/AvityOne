@@ -95,7 +95,7 @@ async function loadSessions() {
   if (!S.project) return;
   S.sessions = await api(`/projects/${S.project.id}/sessions`);
   $('#sessions').replaceChildren(...S.sessions.map((s) => h('div', { class: `it ${s.id === S.session?.id ? 'on' : ''}`, title: s.summary ?? '', onclick: () => openSession(s.id) },
-    s.title ?? 'Nouvelle session', h('span', { class: 'sub' }, s.agent ? agentName(s.agent).split(' ')[0] + ' · ' : '', rel(s.updated_at)))));
+    s.parent_id ? '↳ ' : '', s.title ?? 'Nouvelle session', h('span', { class: 'sub' }, s.agent ? agentName(s.agent).split(' ')[0] + ' · ' : '', rel(s.updated_at)))));
 }
 
 async function openSession(id) {
@@ -157,7 +157,12 @@ function renderItem(it) {
 }
 
 const KIND_ICON = { read: '📄', edit: '✏️', delete: '🗑️', move: '↪️', search: '🔎', execute: '▶️', think: '💭', fetch: '🌐', switch_mode: '⇄' };
-const STATUS = { pending: 'en attente', in_progress: 'en cours', completed: '✓', failed: 'échec', running: 'en cours', done: '✓', error: 'erreur' };
+const STATUS = { pending: 'en attente', in_progress: 'en cours', completed: '✓', failed: 'échec', running: 'en cours', done: '✓', error: 'erreur',
+  waiting: 'validation requise', merged: 'mergé', conflict: 'conflit' };
+const merge = guard(async (e) => {
+  e.target.disabled = true;
+  try { await api(`/sessions/${S.session.id}/merge`, {}); } finally { e.target.disabled = false; }
+});
 
 function buildItem(it) {
   switch (it.type) {
@@ -199,6 +204,14 @@ function buildItem(it) {
           $('#input').value = `Applique les corrections pertinentes de cette revue (ignore les faux positifs, justifie) :\n\n${it.text}`;
           $('#input').focus();
         } }, 'Appliquer les corrections')) : null);
+    case 'parallel':
+      return h('div', { class: 'card par' }, h('h4', {}, `⚡ Exécution parallèle — ${it.children.length} sous-session(s), une par worktree`),
+        h('div', { class: 'kids' }, it.children.map((c) => h('div', { class: 'kid', title: 'Ouvrir la sous-session', onclick: () => openSession(c.id) },
+          badge(c.agent), h('span', { class: 't' }, c.task), h('span', { class: `st ${c.status}` }, STATUS[c.status] ?? c.status),
+          c.conflicts?.length ? h('div', { class: 'conf' }, '⚠️ conflit sur ' + c.conflicts.join(', ')) : null))),
+        it.children.some((c) => c.status !== 'merged')
+          ? h('div', { class: 'row' }, h('button', { class: 'primary', title: 'Merge les branches dans la branche courante du projet, puis revue croisée', onclick: merge }, 'Merger'))
+          : null);
     case 'info': return h('div', { class: 'info' }, it.text);
     case 'error': return h('div', { class: 'error' }, '⚠️ ' + it.text);
     case 'end': return h('div', { class: 'end' }, it.stopReason === 'end_turn' ? '' : `fin du tour : ${it.stopReason}`);
@@ -238,12 +251,16 @@ function renderState() {
   $('#sessMeta').replaceChildren(...(s ? [
     st.agent ? badge(st.agent) : 'aucun agent encore',
     ' ', st.mode === 'plan' ? h('span', { class: 'badge plan' }, 'plan') : 'agent',
-    st.modeId ? ` · mode ${st.modeId}` : '', st.connected ? ' · connecté' : '',
+    st.modeId ? ` · mode ${st.modeId}` : '', st.connected ? ' · connecté' : '', st.worktree ? ' · 🌿 worktree' : '',
   ] : []));
   $('#status').textContent = st.busy ? `${agentName(st.agent)} travaille…` : '';
   $('#stopBtn').hidden = !st.busy;
   $('#sendBtn').disabled = !s || !!st.busy;
   $('#autoApprove').checked = st.autoApprove ?? true;
+  $('#isolated').checked = !!st.isolated;
+  $('#isolated').disabled = !s || !!st.worktree;
+  $('#mergeBtn').hidden = !st.worktree;
+  $('#mergeBtn').disabled = !!st.busy;
   $('#configs').replaceChildren(...(st.configOptions ?? []).filter((o) => o.type === 'select' && o.category !== 'mode').map((o) => {
     const flat = (opts) => opts.flatMap((x) => (x.options ? flat(x.options) : [x]));
     const sel = h('select', { title: o.name, onchange: guard((e) => api(`/sessions/${s.id}/config`, { configId: o.id, value: e.target.value })) },
@@ -276,6 +293,9 @@ $('#modeSeg').addEventListener('click', (e) => {
   $('#modeSeg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
 });
 $('#autoApprove').onchange = guard((e) => api(`/sessions/${S.session.id}/auto-approve`, { on: e.target.checked }));
+$('#isolated').onchange = guard((e) => api(`/sessions/${S.session.id}/isolated`, { on: e.target.checked }));
+$('#mergeBtn').onclick = merge;
+$('#parBtn').onclick = guard(() => api(`/sessions/${S.session.id}/parallel`, {}));
 $('#execAgent').onchange = (e) => { e.target.dataset.touched = '1'; };
 $('#execBtn').onclick = guard(async () => { await api(`/sessions/${S.session.id}/execute`, { agent: $('#execAgent').value }); delete $('#execAgent').dataset.touched; });
 $('#reviewBtn').onclick = guard(() => S.session && api(`/sessions/${S.session.id}/review`, {}));

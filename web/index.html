@@ -32,6 +32,7 @@
         <button id="openSide" class="icon only-mobile" title="Menu">☰</button>
         <div class="title"><div id="sessTitle">—</div><div id="sessMeta" class="muted"></div></div>
         <div id="configs"></div>
+        <button id="mergeBtn" hidden title="Merge le worktree de cette session dans la branche courante du projet, puis revue croisée">Merger</button>
         <button id="reviewBtn" title="Revue du git diff par un autre modèle">Revue croisée</button>
         <button id="sumBtn" title="Résumer la session et enrichir la mémoire">Résumer</button>
         <button id="toggleRight" class="icon" title="Mémoire & contexte">◧</button>
@@ -42,6 +43,7 @@
           <span>📋 Plan prêt</span>
           <select id="execAgent"></select>
           <button id="execBtn" class="primary">Exécuter le plan</button>
+          <button id="parBtn" title="Une sous-session par tâche, chacune dans son worktree git avec l'agent choisi par le routeur">Exécuter en parallèle</button>
         </div>
         <textarea id="input" rows="3" placeholder="Demande quelque chose…  @claude @codex @cursor @opencode pour forcer un agent, /plan pour planifier"></textarea>
         <div class="row">
@@ -52,6 +54,7 @@
             <button data-mode="plan" title="Lecture seule, propose un plan">Plan</button>
           </div>
           <label class="chk" title="Approuver automatiquement les actions (sauf validation de plan)"><input type="checkbox" id="autoApprove" checked> auto</label>
+          <label class="chk" title="Travailler dans un worktree git isolé (branche avity/…) dès le premier tour en mode agent"><input type="checkbox" id="isolated"> worktree</label>
           <span id="status" class="muted"></span>
           <button id="stopBtn" hidden>■ Stop</button>
           <button id="sendBtn" class="primary">Envoyer ⏎</button>
