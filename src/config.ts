@@ -36,6 +36,8 @@ const DEFAULTS = {
   summarizer: { agent: 'claude', model: 'haiku' },
   summarizeEvery: 4,
   autoApprove: true,
+  // Max sub-sessions (each in its own git worktree) for « Exécuter en parallèle ».
+  parallel: 4,
 };
 
 const file = join(HOME, 'config.json');

@@ -31,6 +31,9 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Routage** | `@claude` / `@codex` / `@cursor` / `@opencode` pour forcer, sinon règles regex éditables (plan/archi → Claude, bug/tests → Codex, UI → Cursor, questions → OpenCode). La continuité de session prime. |
 | **Mode Plan** | `/plan` ou le bouton Plan : l'agent passe dans son mode lecture seule natif (`plan`, `read-only`…). Les éditions demandent ton accord. Puis **Exécuter le plan**, avec le même agent ou un autre. |
 | **Revue croisée** | Le `git diff` est relu par un *autre* modèle (Claude écrit → Codex relit, et inversement), puis « Appliquer les corrections ». |
+| **Worktree isolé** | Case « worktree » par session : au premier tour en mode agent, l'agent est relancé dans `.avity/worktrees/<session>` sur la branche `avity/<session>` (exclue du `git status` du projet). Projets non git : inchangé. |
+| **Exécution parallèle** | « Exécuter en parallèle » découpe le dernier plan (entrées du plan de l'agent, sinon liste numérotée) en sous-sessions, au plus `parallel` (4), chacune dans son worktree avec l'agent choisi par le routeur, le plan global et sa tâche en contexte. Leur état s'affiche dans la session parente. |
+| **Merge** | « Merger » commite le travail de chaque worktree, merge les branches dans la branche courante du projet, signale les conflits (merge annulé, worktree conservé), nettoie les worktrees mergés, puis lance une revue croisée du diff combiné. |
 | **Contexte inter-sessions** | À chaque nouvelle session d'agent, un *context pack* est injecté : brief `.avity/brief.md`, état git, mémoires pertinentes (FTS5), extraits de docs, résumés des 3 dernières sessions. |
 | **Reprise multi-agents** | Changer d'agent en cours de route (`@codex continue`) transmet le transcript au nouvel agent. |
 | **Résumés + mémoire** | Toutes les 4 réponses, à l'ouverture d'une nouvelle session, ou sur « Résumer » : un modèle léger (Haiku) résume la session et extrait décisions, conventions, pièges, faits et todos. Le tout est dédupliqué. |
@@ -68,7 +71,10 @@ Le token d'accès à l'UI se lit avec `jq -r .token ~/.avityone/config.json`.
 
 `~/.avityone/config.json` (créé au premier lancement avec un token aléatoire) surcharge les valeurs par défaut de
 [`src/config.ts`](src/config.ts) : `port`, `agents`, `routes`, `defaultAgent`, `reviewer`, `summarizer`,
-`summarizeEvery`, `autoApprove`.
+`summarizeEvery`, `autoApprove`, `parallel`.
+
+Un worktree est un checkout neuf : les fichiers ignorés par git (`node_modules`, `.env`…) n'y sont pas, l'agent doit
+installer les dépendances lui-même.
 
 ## Développement
 
@@ -86,6 +92,7 @@ Node 24 exécute le TypeScript directement (type stripping) : pas de build, pas 
 | [`src/acp.ts`](src/acp.ts) | Client ACP (JSON-RPC stdio), sessions, modes, options, one-shot |
 | [`src/hub.ts`](src/hub.ts) | Orchestrateur : connexions vivantes, items, permissions, plan/exécution/revue |
 | [`src/context.ts`](src/context.ts) | Indexation docs, état git, context pack, transcript, résumés + extraction de mémoire |
+| [`src/worktree.ts`](src/worktree.ts) | Worktrees git par session : création, commit, merge, nettoyage |
 | [`src/router.ts`](src/router.ts) | Choix agent + mode |
 | [`src/mcp.ts`](src/mcp.ts) | Serveur MCP mémoire injecté dans chaque agent |
 | [`src/store.ts`](src/store.ts) | SQLite + FTS5 |
@@ -96,7 +103,7 @@ Node 24 exécute le TypeScript directement (type stripping) : pas de build, pas 
 
 Recherche GitHub et choix de briques : [docs/RESEARCH.md](docs/RESEARCH.md).
 
-1. **Worktrees git par session** et exécution parallèle (un plan découpé en tâches réparties sur plusieurs agents, puis merge et revue). Inspiré de vibe-kanban et claude-squad.
+1. ✅ **Worktrees git par session** et exécution parallèle (un plan découpé en tâches réparties sur plusieurs agents, puis merge et revue). Inspiré de vibe-kanban et claude-squad. Suite possible : regrouper les tâches par fichiers touchés plutôt que par ordre, résolution de conflits assistée par un agent.
 2. **Recherche hybride** : embeddings via `sqlite-vec` à côté de FTS5, plus un index sémantique du code.
 3. **Consolidation de la mémoire** façon mem0 (mise à jour et suppression des faits contradictoires), export markdown versionnable.
 4. **Routeur LLM**, en plus des règles, avec retour d'expérience (quel agent réussit quel type de tâche).

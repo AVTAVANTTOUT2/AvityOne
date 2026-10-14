@@ -40,8 +40,8 @@ const routes: [string, RegExp, Handler][] = [
   }],
   ['POST', /^\/api\/projects$/, (_, b) => hub.createProject(b)],
   ['POST', /^\/api\/projects\/(\d+)\/reindex$/, (m) => ({ chunks: indexProject(project(m[1])) })],
-  ['GET', /^\/api\/projects\/(\d+)\/sessions$/, (m) => all('SELECT id, title, agent, mode, turns, summary, updated_at FROM sessions WHERE project_id = ? ORDER BY updated_at DESC LIMIT 200', Number(m[1]))],
-  ['POST', /^\/api\/projects\/(\d+)\/sessions$/, (m, b) => hub.createSession(Number(m[1]), b.title)],
+  ['GET', /^\/api\/projects\/(\d+)\/sessions$/, (m) => all('SELECT id, title, agent, mode, turns, summary, parent_id, updated_at FROM sessions WHERE project_id = ? ORDER BY updated_at DESC LIMIT 200', Number(m[1]))],
+  ['POST', /^\/api\/projects\/(\d+)\/sessions$/, (m, b) => hub.createSession(Number(m[1]), b.title, { isolated: !!b.isolated })],
   ['GET', /^\/api\/projects\/(\d+)\/memory$/, (m, _, u) => {
     const id = Number(m[1]), q = u.searchParams.get('q');
     const kbChunks = one('SELECT count(*) AS n FROM kb WHERE project_id = ?', id)!.n;
@@ -52,9 +52,10 @@ const routes: [string, RegExp, Handler][] = [
   ['DELETE', /^\/api\/memory\/(\d+)$/, (m) => { run('DELETE FROM memory WHERE rowid = ?', Number(m[1])); return { ok: true }; }],
   ['GET', new RegExp(`^/api/sessions/${S}$`), (m) => hub.snapshot(m[1])],
   ['GET', new RegExp(`^/api/sessions/${S}/context$`), (m, _, u) => {
-    const s = one('SELECT project_id FROM sessions WHERE id = ?', m[1]);
+    const s = one('SELECT project_id, worktree FROM sessions WHERE id = ?', m[1]);
     if (!s) throw httpError(404, 'session inconnue');
-    return buildPack(project(s.project_id), m[1], u.searchParams.get('q') ?? '');
+    const p = project(s.project_id);
+    return buildPack(p, m[1], u.searchParams.get('q') ?? '', '', s.worktree ?? p.path);
   }],
   ['POST', new RegExp(`^/api/sessions/${S}/prompt$`), (m, b) => hub.prompt(m[1], String(b.text ?? ''), { agent: b.agent, mode: b.mode })],
   ['POST', new RegExp(`^/api/sessions/${S}/cancel$`), (m) => hub.cancel(m[1])],
@@ -62,6 +63,9 @@ const routes: [string, RegExp, Handler][] = [
   ['POST', new RegExp(`^/api/sessions/${S}/config$`), (m, b) => hub.setConfig(m[1], String(b.configId), b.value)],
   ['POST', new RegExp(`^/api/sessions/${S}/auto-approve$`), (m, b) => hub.setAutoApprove(m[1], !!b.on)],
   ['POST', new RegExp(`^/api/sessions/${S}/execute$`), (m, b) => hub.execute(m[1], b.agent)],
+  ['POST', new RegExp(`^/api/sessions/${S}/isolated$`), (m, b) => hub.setIsolated(m[1], !!b.on)],
+  ['POST', new RegExp(`^/api/sessions/${S}/parallel$`), (m) => hub.parallel(m[1])],
+  ['POST', new RegExp(`^/api/sessions/${S}/merge$`), (m) => hub.merge(m[1])],
   ['POST', new RegExp(`^/api/sessions/${S}/review$`), (m, b) => hub.review(m[1], b.agent)],
   ['POST', new RegExp(`^/api/sessions/${S}/summarize$`), async (m) => (await summarize(m[1])) ?? { skipped: true }],
 ];
