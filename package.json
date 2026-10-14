@@ -1,0 +1,18 @@
+{
+  "name": "avityone",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plateforme personnelle d'orchestration d'agents de code (Claude Code, Codex, Cursor, OpenCode) avec contexte et mémoire partagés",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "test": "node --test test/*.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
