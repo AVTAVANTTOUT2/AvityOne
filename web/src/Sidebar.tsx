@@ -1,5 +1,5 @@
 // Left rail: brand, projects (with generative covers), sessions, agent roster.
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { MetalBadge, MetalText } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
 import { api, hoursSince, rel, type Agent, type LiveState, type Project, type SessionRow } from './api';
@@ -73,6 +73,11 @@ export function Sidebar({ open, projects, project, sessions, sessionId, live, ag
 function ProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Project) => void }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [busy, onClose]);
   const submit = guard(async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -93,7 +98,7 @@ function ProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
           <div className="err">{err}</div>
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <button type="button" className="btn ghost" onClick={onClose}>Annuler</button>
-            <button className="btn primary" disabled={busy}>Créer</button>
+            <button className="btn primary" disabled={busy}>{busy ? 'Création…' : 'Créer'}</button>
           </div>
         </form>
       </div>

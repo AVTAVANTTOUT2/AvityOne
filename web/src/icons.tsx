@@ -38,6 +38,7 @@ const P: Record<string, string> = {
   arrowRight: 'M5 12h14M13 6l6 6-6 6',
   logout: 'M14 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M10 16l-4-4 4-4M6 12h9.5',
   plug: 'M9 3.5v4M15 3.5v4M6.5 7.5h11V11a5.5 5.5 0 0 1-11 0ZM12 16.5v4',
+  sliders: 'M4.5 7.5h8M16.5 7.5h3M14.5 9.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM4.5 16.5h3M11.5 16.5h8M9.5 18.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z',
 };
 
 const FILLED = new Set(['stop']);

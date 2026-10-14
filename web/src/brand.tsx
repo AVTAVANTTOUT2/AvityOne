@@ -1,7 +1,11 @@
 // Brand assets built for AvityOne in the libraries.dev style: logo mark, generative project covers,
 // and the agent identity system (bot-avatars looks + thinking-orbs states).
+import { lazy, Suspense } from 'react';
 import { BotAvatar, type BotAvatarProps } from 'bot-avatars';
 import type { OrbState } from 'thinking-orbs';
+import { Boundary, webgl } from './ui';
+
+const Hero = lazy(() => import('./Hero'));
 
 export function LogoMark({ size = 22 }: { size?: number }) {
   return (
@@ -81,6 +85,13 @@ export function coverJpeg(seed: string, size = 768): Promise<string> {
     }));
   }
   return rasters.get(key)!;
+}
+
+/** A project cover: revealed by the img-fx shader where WebGL runs well, else the still image the shader would show. */
+export function Cover({ seed, auto, count }: { seed: string; auto?: boolean; count?: number }) {
+  const still = <img className="cover-still" src={coverUrl(`${seed}#0`, 768)} alt="" />;
+  if (!webgl()) return still;
+  return <Boundary fallback={still}><Suspense fallback={null}><Hero seed={seed} auto={auto} count={count} /></Suspense></Boundary>;
 }
 
 // ---------- agent identities ----------
