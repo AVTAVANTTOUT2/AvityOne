@@ -39,7 +39,7 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Résumés + mémoire** | Toutes les 4 réponses, à l'ouverture d'une nouvelle session, ou sur « Résumer » : un modèle léger (Haiku) résume la session et extrait décisions, conventions, pièges, faits et todos. Le tout est dédupliqué. |
 | **Mémoire partagée MCP** | Chaque agent reçoit le serveur MCP `avity` (`avity_memory_search`, `avity_memory_add`, `avity_recent_sessions`). Ce que Codex apprend, Claude le sait. |
 | **Base de connaissance** | Indexation des `.md/.txt` du projet (README, docs/, AGENTS.md, `.serena/memories`…) en FTS5, plus recherche dans l'UI. |
-| **UI type Cursor** | Projets et sessions, flux en streaming (messages, réflexions, outils, diffs, plans, permissions), sélecteur de modèle et d'effort exposé par chaque agent, panneau mémoire et aperçu du contexte injecté. Utilisable sur mobile. |
+| **UI premium** | React + [libraries.dev](https://libraries.dev) (thème et effets, voir ci-dessous) : projets et sessions, flux en streaming (messages, réflexions, outils animés, diffs, plans, permissions), sélecteurs modèle/effort exposés par chaque agent, dictée vocale, panneau mémoire et aperçu du contexte injecté. Utilisable sur mobile. |
 | **Permissions** | Auto-approbation configurable. La validation de plan et les éditions en mode plan te reviennent toujours. |
 
 ## Installation (Debian 13)
@@ -67,6 +67,22 @@ Le token d'accès à l'UI se lit avec `jq -r .token ~/.avityone/config.json`.
 - **CLI** : `avity ask -p monprojet "/plan migrer l'auth vers des sessions"`, `avity memory monprojet auth`, `avity sessions monprojet`.
 - **Brief projet** : écris `.avity/brief.md` dans le projet (objectifs, stack, contraintes). Il est injecté en tête de chaque session.
 
+## Interface : libraries.dev à plein régime
+
+Les 7 bibliothèques de [libraries.dev](https://libraries.dev) (MIT) sont utilisées, chacune pour un rôle précis :
+
+| Bibliothèque | Où |
+|---|---|
+| **Bot avatars** (`bot-avatars`) | Une identité 3D par agent : Claude = chat à lunettes rondes, Codex = goutte au casque, Cursor = cube à lunettes noires, OpenCode = rond au bonnet, AvityOne = droïde à nœud papillon. Ils travaillent, attendent ou dorment selon l'état réel. |
+| **Thinking orbs** (`thinking-orbs`) | Un état d'orbe par action en cours : lecture/recherche → *searching*, édition → *shaping*, commande → *working*, réflexion → *solving*, plan → *weaving*, rédaction → *composing*, attente de validation → *breathing*. |
+| **Border beam** (`border-beam`) | Halo pulsé sur les autorisations (*sunset*) et la validation de plan (*ocean*), lueur autour de la barre « Plan prêt », trait sous la session active, pilule de statut, champ de connexion. |
+| **Liquid metal** (`metal-fx`) | Bouton d'envoi (chromatique, reflets sur les puces voisines, déformation au survol), « Exécuter le plan » en or, logo en `MetalText`, badge `MetalBadge`. |
+| **Gooey** (`liquid-gooey`) | Sélecteur de mode à goutte qui glisse (*move*), menu « + » qui s'éclate en gouttes (*morph*), avatars des sous-sessions parallèles qui se séparent puis refusionnent au merge. |
+| **Voice** (`voice-glow`) | Dictée vocale (Web Speech API, `fr-FR`) avec lueur qui réagit au micro. Le balayage *Processing* (une offre Pro) est reconstruit sur l'API publique `motion` pendant que l'agent travaille. |
+| **Image generation** (`img-fx`) | Couverture générative de chaque projet révélée par le shader (connexion, nouvelle session), chargée à la demande. |
+
+Assets construits pour compléter, dans le même thème : jeu d'icônes, logo, couvertures procédurales (SVG rastérisé pour le shader), visionneuse de diff, styles markdown, menus et dialogues.
+
 ## Configuration
 
 `~/.avityone/config.json` (créé au premier lancement avec un token aléatoire) surcharge les valeurs par défaut de
@@ -79,13 +95,15 @@ installer les dépendances lui-même.
 ## Développement
 
 ```bash
-npm install        # seulement typescript + @types/node (dev)
+npm install        # dev uniquement : TypeScript, Vite, React et les libs UI (le serveur n'a aucune dépendance)
 npm test           # tests de bout en bout contre un agent ACP simulé (test/fake-agent.mjs)
 npm run check      # tsc strict
+npm run build      # compile l'UI dans web/dist (fait aussi par deploy/install.sh)
 npm run dev        # serveur avec rechargement
+npm run dev:web    # UI Vite avec rechargement à chaud (proxy /api vers :7710)
 ```
 
-Node 24 exécute le TypeScript directement (type stripping) : pas de build, pas de dépendance runtime.
+Node 24 exécute le TypeScript du serveur directement (type stripping) : pas de build, pas de dépendance runtime. Seule l'UI se compile.
 
 | Fichier | Rôle |
 |---|---|
@@ -97,7 +115,7 @@ Node 24 exécute le TypeScript directement (type stripping) : pas de build, pas 
 | [`src/mcp.ts`](src/mcp.ts) | Serveur MCP mémoire injecté dans chaque agent |
 | [`src/store.ts`](src/store.ts) | SQLite + FTS5 |
 | [`src/server.ts`](src/server.ts) | API HTTP, SSE, UI statique, auth |
-| [`web/`](web/) | UI (vanilla JS, aucun build) |
+| [`web/src/`](web/src/) | UI React (Vite) : `App` (shell), `Feed` (conversation), `Composer` (dock), `Sidebar`, `Panel`, `brand` (logo, couvertures, identités d'agents), `icons`, `ui` (primitives) |
 
 ## Feuille de route
 
