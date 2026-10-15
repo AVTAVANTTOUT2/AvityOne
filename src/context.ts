@@ -30,9 +30,13 @@ export function chunk(text: string, max = 1500): string[] {
   return out;
 }
 
-/** (Re)indexes a project's docs (README, docs/, AGENTS.md, .serena/memories, notes…) into the FTS knowledge base. */
-export function indexProject(p: Row): number {
-  if (!existsSync(p.path)) return 0;
+/**
+ * (Re)indexes a project's docs (README, docs/, AGENTS.md, .serena/memories, notes…) into the FTS knowledge base.
+ * A file that can't be read is skipped and listed in `failed` instead of failing the whole index.
+ */
+export function indexProject(p: Row): { chunks: number; failed: string[] } {
+  const failed: string[] = [];
+  if (!existsSync(p.path)) return { chunks: 0, failed };
   const files = new Set(listDocs(p.path));
   const serena = join(p.path, '.serena/memories');
   if (existsSync(serena)) for (const f of readdirSync(serena)) files.add(relative(p.path, join(serena, f)));
@@ -42,12 +46,16 @@ export function indexProject(p: Row): number {
     run('DELETE FROM kb WHERE project_id = ?', p.id);
     for (const f of files) {
       const abs = join(p.path, f);
-      try { if (statSync(abs).size > 300_000) continue; } catch { continue; }
-      for (const c of chunk(readFileSync(abs, 'utf8'))) { run('INSERT INTO kb (text, path, project_id) VALUES (?, ?, ?)', c, f, p.id); n++; }
+      let text: string;
+      try {
+        if (statSync(abs).size > 300_000) continue;
+        text = readFileSync(abs, 'utf8');
+      } catch { failed.push(f); continue; }
+      for (const c of chunk(text)) { run('INSERT INTO kb (text, path, project_id) VALUES (?, ?, ?)', c, f, p.id); n++; }
     }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
-  return n;
+  return { chunks: n, failed };
 }
 
 export function gitState(cwd: string): string {
@@ -76,21 +84,32 @@ export function mcpServersFor(projectId: number): McpServer[] {
   }];
 }
 
-const readIf = (f: string) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
+/** A file that may legitimately be absent: missing is '', any other failure (permissions, a directory…) throws. */
+const readOptional = (f: string) => {
+  try { return readFileSync(f, 'utf8'); } catch (e: any) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return ''; throw e; }
+};
 
-/** The context pack injected as the first message of every fresh agent session. `cwd` is the session's worktree, if any. */
-export function buildPack(p: Row, sessionId: string, prompt: string, handoff = '', cwd = p.path): { text: string; stats: string } {
+/**
+ * The context pack injected as the first message of every fresh agent session. `cwd` is the session's worktree, if any.
+ * A section that fails to load is skipped and reported in `warnings`: the agent still gets the rest.
+ */
+export function buildPack(p: Row, sessionId: string, prompt: string, handoff = '', cwd = p.path): { text: string; stats: string; warnings: string[] } {
   const parts: string[] = [];
+  const warnings: string[] = [];
+  const load = <T>(what: string, fn: () => T, fallback: T): T => {
+    try { return fn(); } catch (e: any) { warnings.push(`${what} (${String(e.message ?? e).slice(0, 200)})`); return fallback; }
+  };
+  if (!existsSync(cwd)) warnings.push(`dossier de travail introuvable (${cwd})`);
   if (cwd !== p.path) parts.push(`## Worktree isolé\nTu travailles dans ${cwd}, un worktree git sur sa propre branche. Ne modifie rien en dehors : AvityOne mergera ta branche.`);
-  const brief = readIf(join(p.path, '.avity/brief.md')).trim();
+  const brief = load('brief illisible', () => readOptional(join(p.path, '.avity/brief.md')), '').trim();
   if (brief) parts.push(`## Brief projet\n${brief.slice(0, 3000)}`);
-  const gs = gitState(cwd);
+  const gs = gitState(cwd); // a project that isn't a git repository is normal, not an error
   if (gs) parts.push(`## État git\n${gs}`);
-  const mems = searchMemory(p.id, prompt, 10);
+  const mems = load('mémoire du projet indisponible', () => searchMemory(p.id, prompt, 10), []);
   if (mems.length) parts.push(`## Mémoire projet pertinente\n${mems.map((m) => `- [${m.kind}] ${m.text}`).join('\n')}`);
-  const docs = searchKb(p.id, prompt, 4);
+  const docs = load('base de connaissance indisponible', () => searchKb(p.id, prompt, 4), []);
   if (docs.length) parts.push(`## Extraits de la base de connaissance\n${docs.map((d) => `### ${d.path}\n${d.text.slice(0, 1200)}`).join('\n\n')}`);
-  const recent = all(`SELECT title, summary FROM sessions WHERE project_id = ? AND id <> ? AND summary IS NOT NULL ORDER BY updated_at DESC LIMIT 3`, p.id, sessionId);
+  const recent = load('sessions récentes indisponibles', () => all(`SELECT title, summary FROM sessions WHERE project_id = ? AND id <> ? AND summary IS NOT NULL ORDER BY updated_at DESC LIMIT 3`, p.id, sessionId), []);
   if (recent.length) parts.push(`## Sessions récentes\n${recent.map((r) => `- ${r.title ?? 'session'} : ${r.summary}`).join('\n')}`);
   if (handoff) parts.push(`## Reprise : conversation précédente de cette session (avec toi ou un autre agent)\n${handoff}`);
   const text = `<avity-context>
@@ -99,7 +118,7 @@ Contexte fourni par AvityOne, l'orchestrateur qui te pilote. Le serveur MCP "avi
 
 ${parts.join('\n\n') || '(aucun contexte projet pour l\'instant)'}
 </avity-context>`;
-  return { text, stats: `${mems.length} mémoires, ${docs.length} docs, ${recent.length} sessions${gs ? ', git' : ''}${handoff ? ', reprise' : ''}` };
+  return { text, warnings, stats: `${mems.length} mémoires, ${docs.length} docs, ${recent.length} sessions${gs ? ', git' : ''}${handoff ? ', reprise' : ''}` };
 }
 
 /** Plain-text transcript of a session (user/assistant/tools), keeping the head and the most recent tail. */

@@ -1,14 +1,18 @@
-// Left rail: brand, projects (with generative covers), sessions (pinned, archived, history search), agent roster.
+// Left rail: brand, projects (with generative covers), sessions (pinned, archived, history search, activity), agent roster.
 import { Fragment, useEffect, useState, type FormEvent } from 'react';
 import { MetalBadge, MetalText } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
-import { api, hoursSince, rel, type Agent, type LiveState, type Project, type SearchHit, type SessionRow } from './api';
+import { api, hoursSince, rel, signalOf, SIGNAL_RANK, SIGNAL_TITLE, type Act, type Agent, type LiveState, type Project, type SearchHit, type SessionRow, type Signal } from './api';
 import { AgentAvatar, LogoMark, coverUrl } from './brand';
 import { Icon } from './icons';
-import { MetalSafe, guard } from './ui';
+import { MetalSafe, guard, toast } from './ui';
 
-export function Sidebar({ open, projects, project, sessions, sessionId, live, agents, onProject, onSession, onNewSession, onCreated, onClose }: {
+/** Activity dot: waiting for you (amber), working (pulsing), failed or finished and not seen yet (red, green). */
+const Dot = ({ s }: { s: Signal | null }) => (s ? <span className={`act ${s}`} title={SIGNAL_TITLE[s]} aria-label={SIGNAL_TITLE[s]} role="img" /> : null);
+
+export function Sidebar({ open, projects, project, sessions, sessionId, live, agents, acts, onProject, onSession, onNewSession, onCreated, onClose }: {
   open: boolean; projects: Project[]; project: Project | null; sessions: SessionRow[]; sessionId: string | null; live: LiveState | null; agents: Agent[];
+  acts: Record<string, Act>;
   onProject: (id: number) => void; onSession: (id: string, itemId?: number) => void; onNewSession: () => void; onCreated: (p: Project) => void; onClose: () => void;
 }) {
   const [dialog, setDialog] = useState(false);
@@ -28,6 +32,11 @@ export function Sidebar({ open, projects, project, sessions, sessionId, live, ag
   const closeSearch = () => { setSearching(false); setQ(''); };
 
   const active = sessions.filter((s) => !s.archived), archived = sessions.filter((s) => s.archived);
+  // A project shows its most pressing session signal, so work in other projects isn't missed.
+  const projectSignal = (id: number) => Object.entries(acts).reduce<Signal | null>((best, [sid, a]) => {
+    const s = a.projectId === id && sid !== sessionId ? signalOf(a) : null;
+    return s && (!best || SIGNAL_RANK[s] > SIGNAL_RANK[best]) ? s : best;
+  }, null);
   const sessionRow = (s: SessionRow) => {
     const on = s.id === sessionId;
     const working = on && !!live?.busy;
@@ -38,6 +47,7 @@ export function Sidebar({ open, projects, project, sessions, sessionId, live, ag
           : <span className="icon-tile" style={{ width: 20, height: 20, borderRadius: 7 }}><Icon name="chat" size={12} /></span>}
         <span className="grow ellipsis">{s.title ?? 'Nouvelle session'}</span>
         {!!s.pinned && !s.archived && <Icon name="pin" size={12} className="muted" aria-label="épinglée" />}
+        <Dot s={on ? (acts[s.id]?.waiting ? 'waiting' : null) : signalOf(acts[s.id])} />
         <span className="sub">{rel(s.updated_at)}</span>
       </button>
     );
@@ -60,6 +70,7 @@ export function Sidebar({ open, projects, project, sessions, sessionId, live, ag
           <button key={p.id} className={`row-item ${p.id === project?.id ? 'on' : ''}`} title={p.path} onClick={() => onProject(p.id)}>
             <img className="cover-thumb" src={coverUrl(p.name, 64)} alt="" />
             <span className="grow ellipsis">{p.name}</span>
+            <Dot s={projectSignal(p.id)} />
           </button>
         ))}
       </div>
@@ -140,7 +151,9 @@ function ProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     const f = new FormData(e.currentTarget);
     setBusy(true); setErr(f.get('git') ? 'Clonage en cours…' : '');
     try {
-      onCreated(await api<Project>('/projects', { name: f.get('name'), path: f.get('path') || undefined, git: f.get('git') || undefined }));
+      const p = await api<Project & { failed?: string[] }>('/projects', { name: f.get('name'), path: f.get('path') || undefined, git: f.get('git') || undefined });
+      if (p.failed?.length) toast(`Projet créé. ${p.failed.length} document(s) illisible(s), non indexé(s) : ${p.failed.slice(0, 3).join(', ')}${p.failed.length > 3 ? '…' : ''}`, true);
+      onCreated(p);
     } catch (x) { setErr((x as Error).message); } finally { setBusy(false); }
   });
   return (

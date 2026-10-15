@@ -30,22 +30,43 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   simple, où l'API presse-papiers du navigateur est indisponible.
 - **Navigation entre sessions** : boutons ‹ › de l'en-tête et Alt+↑ / Alt+↓ dans l'ordre de la liste ; les boutons
   précédent/suivant du navigateur (et le retour Android) parcourent les sessions visitées.
+- **Activité des sessions en arrière-plan** : une pastille par session et par projet signale ce qui attend ta
+  validation (ambre), ce qui travaille (pulsation), et ce qui a échoué ou terminé sans que tu l'aies vu (rouge, vert).
+  Le titre de l'onglet compte ce qui t'attend, par exemple « (2) AvityOne ». Une session terminée pendant une coupure
+  est marquée comme telle au retour.
+- **Notifications** de fin, d'échec et d'autorisation en attente, y compris pour les autres projets : un toast avec
+  « Ouvrir » quand la page est affichée, une notification système quand l'onglet est en arrière-plan (cloche de
+  l'en-tête, HTTPS ou localhost requis).
+- **État de la connexion** : un bandeau signale la perte du serveur, puis « Reconnecté » et une resynchronisation
+  (liste, session ouverte, activité). Un lien mort sans erreur visible (veille, proxy) est détecté par un battement
+  toutes les 25 s, et un flux abandonné par le navigateur est rouvert avec un délai croissant.
+- **Erreurs de mémoire et de contexte signalées** : une section du context pack qui ne se charge pas (brief illisible,
+  mémoire ou base de connaissance indisponible, dossier introuvable) est annoncée dans la session, et l'agent démarre
+  avec le reste. Un résumé automatique qui échoue (donc une mémoire qui n'est plus alimentée) est signalé dans la
+  session. Les panneaux Mémoire et Contexte affichent leurs erreurs de chargement, et la réindexation nomme les
+  fichiers illisibles.
 - CLI : `avity search <projet> <texte>` et `avity export <session>`.
 - API : `PATCH` et `DELETE /api/sessions/:id`, `PUT /api/sessions/:id/draft`, `GET /api/sessions/:id/export`,
   `GET /api/projects/:id/search?q=`, `POST /api/sessions/:id/fork` (`before` : id du message où couper),
   `POST /api/sessions/:id/edit` (`itemId`, `text`, `fork`), `POST /api/sessions/:id/regenerate` (`agent`).
-  Événement SSE `reset` (`fromId`) quand une conversation est coupée.
+  Événement SSE `reset` (`fromId`) quand une conversation est coupée. `GET /api/state` renvoie `activity` (sessions
+  occupées ou en attente, tous projets) ; la liste des sessions et l'état d'une session portent `busy` et `waiting` ;
+  événement SSE `activity` (`kind` : `done`, `error`, `waiting`) ; `projectId` sur les événements `state` et `item` ;
+  `/reindex` et la création de projet renvoient `failed` ; `/context` renvoie `warnings`.
 - `ROADMAP.md` : feuille de route par domaine (agents et routage, plans, git et fusion, environnement de développement,
   mémoire, projets, sessions, multimodalité, notifications, mobile, administration, CLI).
 - `CHANGELOG.md`.
 
 ### Corrigé
 
+- Un document illisible (droits, dossier nommé `*.md`…) faisait échouer toute l'indexation, et donc la création du
+  projet : il est maintenant ignoré et signalé.
 - Les petits boutons icône (« + » des projets et des sessions, « Oublier » de la mémoire) n'affichaient qu'un point :
   la marge de `.chip.sm` écrasait l'icône.
 
 ### Modifié
 
+- Le battement du flux SSE est un événement nommé `ping` (au lieu d'un commentaire), pour que la page puisse le voir.
 - README : la feuille de route renvoie vers `ROADMAP.md` et `CHANGELOG.md` ; le tableau des fonctions est daté v0.2.
 - `docs/RESEARCH.md` : la légende 🔜 renvoie vers `ROADMAP.md`.
 

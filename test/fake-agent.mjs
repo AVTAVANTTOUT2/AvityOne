@@ -28,9 +28,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"title": "Titre automatique", "summary": "Résumé.", "memories": []}' } });
         return reply({ stopReason: 'end_turn' });
       }
+      const ask = m.params.prompt.at(-1).text;
+      if (ask.includes('crash')) process.exit(3); // « crash »: the agent dies mid-turn
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `mode=${mode} ` } });
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `ctx=${text.includes('<avity-context>')}` } });
-      const ask = m.params.prompt.at(-1).text;
       if (ask.includes('bloc de code')) up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\n```js\nconsole.log("avity");\n```' } });
       const kind = ask.includes('exitplan') ? 'switch_mode' : 'edit'; // « exitplan »: leave plan mode like Claude's ExitPlanMode
       up({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Edit a.txt', kind, status: 'pending' });

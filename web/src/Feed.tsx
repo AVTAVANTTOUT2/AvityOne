@@ -202,7 +202,9 @@ const Row = memo(function Row({ it, head, live, latest, agents, act, busy = fals
     case 'parallel':
       return <Parallel it={it} agents={agents} act={act} />;
     case 'info':
-      return <div className="info-line"><AgentAvatar id="avity" size={16} paused /><span>{it.text}</span></div>;
+      return it.level === 'warn'
+        ? <div className="info-line warn" role="status"><Icon name="alert" size={15} /><span>{it.text.replace(/^⚠️\s*/, '')}</span></div>
+        : <div className="info-line"><AgentAvatar id="avity" size={16} paused /><span>{it.text}</span></div>;
     case 'error':
       return (
         <div className="error-line">

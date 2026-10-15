@@ -1,7 +1,7 @@
 // End-to-end checks against a scripted ACP agent: routing, context injection, permissions, plan mode, MCP memory.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
@@ -25,7 +25,8 @@ writeFileSync(join(home, 'config.json'), JSON.stringify({
 const { route } = await import('../src/router.ts');
 const { ftsQuery, addMemory, searchMemory, searchHistory, run, one } = await import('../src/store.ts');
 const { hub, planTasks } = await import('../src/hub.ts');
-const { exportMarkdown, summarize } = await import('../src/context.ts');
+const { exportMarkdown, summarize, buildPack } = await import('../src/context.ts');
+const { config } = await import('../src/config.ts');
 const avail = ['fake', 'fake2'];
 
 test('router: mention, /plan, rules, continuity', () => {
@@ -318,6 +319,63 @@ test('edit and regenerate: the conversation is cut at the message, the agent res
   assert.throws(() => hub.regenerate(s.id), /parallèle/);
   assert.throws(() => hub.edit(s.id, snap.items[1].id, 'x'), /introuvable/, 'only user messages can be edited');
   hub.listeners.delete(spy);
+});
+
+test('activity: waiting, done and error events, live state in session lists', async () => {
+  const p = await hub.createProject({ name: 'act' });
+  const s = hub.createSession(p.id);
+  hub.updateSession(s.id, { title: 'Suivie' });
+  const evs: any[] = [];
+  const spy = (ev: any) => { if (ev.type === 'activity' && ev.sessionId === s.id) evs.push(ev); };
+  hub.listeners.add(spy);
+  const mine = () => hub.activityList().filter((a) => a.sessionId === s.id);
+
+  hub.prompt(s.id, 'refonte', { mode: 'plan' }); // in plan mode the edit waits for the user
+  const perm = await waitFor(() => hub.snapshot(s.id).items.find((i: any) => i.type === 'permission'));
+  assert.equal(hub.snapshot(s.id).state.waiting, true);
+  assert.deepEqual(hub.listSessions(p.id).map((r) => [r.busy, r.waiting]), [[true, true]]);
+  assert.deepEqual(mine(), [{ sessionId: s.id, projectId: p.id, busy: true, waiting: true }]);
+  hub.respondPermission(s.id, perm.id, 'yes');
+  await waitIdle(s.id);
+  assert.equal(hub.snapshot(s.id).state.waiting, false);
+  assert.deepEqual(mine(), []);
+
+  hub.prompt(s.id, 'crash');
+  await waitIdle(s.id);
+  assert.deepEqual(evs.map((e) => e.kind), ['waiting', 'done', 'error']);
+  assert.equal(evs[0].text, 'Edit a.txt');
+  assert.deepEqual([evs[1].text, evs[1].title, evs[1].projectId, evs[1].agent], ['mode=plan ctx=true', 'Suivie', p.id, 'fake']);
+  assert.match(evs[2].text, /arrêté/);
+  hub.listeners.delete(spy);
+});
+
+test('context: unreadable docs, brief and summaries are reported instead of failing or vanishing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'avity-docs-'));
+  writeFileSync(join(dir, 'README.md'), '# Lisible\nLe projet zébu.');
+  mkdirSync(join(dir, 'piège.md')); // named like a doc, can't be read as one
+  const p = await hub.createProject({ name: 'docs', path: dir });
+  assert.deepEqual([p.chunks, p.failed], [1, ['piège.md']], 'the readable docs are indexed, the project is created');
+
+  assert.match(buildPack({ ...p, path: join(dir, 'absent') }, 'x', 'zébu').warnings.join(), /dossier de travail introuvable/);
+  assert.deepEqual(buildPack(p, 'x', 'zébu').warnings, []);
+  mkdirSync(join(dir, '.avity', 'brief.md'), { recursive: true });
+  const s = hub.createSession(p.id);
+  hub.prompt(s.id, 'zébu');
+  const snap = await waitIdle(s.id);
+  const warn = snap.items.find((i: any) => i.level === 'warn');
+  assert.match(warn.text, /^⚠️ Contexte partiel : brief illisible/);
+  assert.equal(snap.items.filter((i: any) => i.type === 'assistant').at(-1).text, 'mode=default ctx=true', 'the agent still gets the rest');
+
+  const saved = config.summarizer;
+  config.summarizer = { agent: 'absent', model: '' };
+  const memoryWarnings = () => hub.snapshot(s.id).items.filter((i: any) => i.text?.startsWith('⚠️ Mémoire non mise à jour')).length;
+  try {
+    hub.summarizeBg(s.id);
+    await waitFor(() => memoryWarnings());
+    hub.summarizeBg(s.id);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(memoryWarnings(), 1, 'said once in a row');
+  } finally { config.summarizer = saved; }
 });
 
 test('mcp: memory tools over stdio', async () => {

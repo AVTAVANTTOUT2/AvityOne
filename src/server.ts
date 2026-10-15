@@ -36,10 +36,11 @@ const routes: [string, RegExp, Handler][] = [
     return {
       agents: Object.entries(config.agents).map(([id, a]) => ({ id, name: a.name, strengths: a.strengths, installed: avail.includes(id) })),
       projects: all('SELECT * FROM projects ORDER BY name'),
+      activity: hub.activityList(),
     };
   }],
   ['POST', /^\/api\/projects$/, (_, b) => hub.createProject(b)],
-  ['POST', /^\/api\/projects\/(\d+)\/reindex$/, (m) => ({ chunks: indexProject(project(m[1])) })],
+  ['POST', /^\/api\/projects\/(\d+)\/reindex$/, (m) => indexProject(project(m[1]))],
   ['GET', /^\/api\/projects\/(\d+)\/sessions$/, (m) => hub.listSessions(Number(m[1]))],
   ['GET', /^\/api\/projects\/(\d+)\/search$/, (m, _, u) => searchHistory(Number(m[1]), u.searchParams.get('q') ?? '')],
   ['POST', /^\/api\/projects\/(\d+)\/sessions$/, (m, b) => hub.createSession(Number(m[1]), b.title, { isolated: !!b.isolated })],
@@ -82,7 +83,8 @@ function sse(req: IncomingMessage, res: ServerResponse) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
   res.write(': ok\n\n');
   const send = (ev: any) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  const beat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  // A named event, unlike an SSE comment, reaches the page: it tells a silently dead connection from a quiet one.
+  const beat = setInterval(() => res.write('event: ping\ndata: {}\n\n'), 25_000);
   hub.listeners.add(send);
   req.on('close', () => { clearInterval(beat); hub.listeners.delete(send); });
 }

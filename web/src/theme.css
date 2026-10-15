@@ -119,6 +119,13 @@ button.tag.link:hover { color: var(--text); }
 .roster .row-item { min-height: 40px; }
 .roster .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); margin-left: auto; flex: none; }
 .roster .dot.ok { background: var(--green); box-shadow: 0 0 8px rgba(62, 207, 142, .6); }
+/* activity signals of sessions and projects */
+.act { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.act.waiting { background: var(--amber); box-shadow: 0 0 8px rgba(245, 177, 76, .6); }
+.act.busy { background: var(--accent-ink); animation: act-pulse 1.6s ease-in-out infinite; }
+.act.error { background: var(--red); }
+.act.done { background: var(--green); }
+@keyframes act-pulse { 50% { opacity: .3; } }
 .side-search { height: 32px; margin: 0 2px 6px; font-size: 13px; }
 .list-note { padding: 6px 10px; font-size: 12px; }
 .row-item.hit { flex-direction: column; align-items: stretch; gap: 3px; }
@@ -139,6 +146,7 @@ mark { background: rgba(245, 177, 76, .22); color: var(--text); border-radius: 3
 .head .meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 12px; color: var(--text-3); }
 .title-input { display: block; width: 100%; height: 24px; padding: 0 8px; margin-left: -8px; border: 0; border-radius: var(--r-xs); background: var(--chip); color: var(--text); font: 500 14px var(--font); outline: none; box-shadow: inset 0 0 0 1px rgba(125, 180, 255, .45); }
 
+.conn-banner { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 6px 16px; flex: none; font-size: 12.5px; color: var(--amber); background: rgba(245, 177, 76, .08); border-bottom: 1px solid rgba(245, 177, 76, .15); }
 .feed { flex: 1; overflow-y: auto; overflow-x: hidden; }
 .feed-inner { max-width: 780px; margin: 0 auto; padding: 28px 24px 40px; display: grid; gap: 6px; }
 /* Each row's wrapper is a grid too, so messages keep their own placement (user bubbles stay on the right). */
@@ -230,6 +238,7 @@ mark { background: rgba(245, 177, 76, .22); color: var(--text); border-radius: 3
 .goo-avatar { width: 44px; height: 44px; border-radius: 22px; display: grid; place-items: center; }
 .info-line { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 4px 44px; color: var(--text-3); font-size: 12px; white-space: pre-wrap; }
 .info-line svg { flex: none; margin-top: 2px; }
+.info-line.warn { color: var(--amber); }
 .error-line { margin: 8px 0 8px 44px; padding: 10px 14px; border-radius: var(--r-sm); background: rgba(255, 107, 107, .07); color: #ffb4b4; font-size: 13px; white-space: pre-wrap; box-shadow: inset 0 0 0 1px rgba(255, 107, 107, .15); }
 .turn-end { min-height: 10px; margin: 2px 0 8px 44px; display: grid; gap: 4px; }
 .turn-end .cut { font-size: 11px; color: var(--text-4); }
@@ -303,6 +312,7 @@ mark { background: rgba(245, 177, 76, .22); color: var(--text); border-radius: 3
 .k-decision { color: var(--accent-ink); } .k-convention { color: var(--violet); } .k-pitfall { color: var(--red); } .k-fact { color: var(--green); } .k-todo { color: var(--amber); } .k-doc { color: var(--text-4); }
 .ctx { white-space: pre-wrap; font: 11.5px/1.6 var(--mono); color: var(--text-2); background: var(--stage); border-radius: var(--r-sm); padding: 12px; box-shadow: var(--ring); margin: 0; }
 .stat { display: flex; gap: 6px; flex-wrap: wrap; }
+.panel-err { padding: 8px 12px; border-radius: var(--r-sm); background: rgba(255, 107, 107, .07); color: #ffb4b4; font-size: 12.5px; box-shadow: inset 0 0 0 1px rgba(255, 107, 107, .15); }
 
 /* ---------- dialog & toast ---------- */
 .scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .55); backdrop-filter: blur(4px); animation: fade var(--med) var(--ease); }

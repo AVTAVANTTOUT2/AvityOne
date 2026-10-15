@@ -2,7 +2,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { MetalFx, MetalText } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
-import { api, subscribe, type Agent, type Item, type LiveState, type Project, type SessionRow, type Snapshot } from './api';
+import { api, subscribe, type Act, type Agent, type Item, type Link, type LiveActivity, type LiveState, type Project, type SessionRow, type Snapshot } from './api';
 import { AgentAvatar, LogoMark } from './brand';
 import { Icon } from './icons';
 import { Sidebar } from './Sidebar';
@@ -11,6 +11,7 @@ import { Dock, type DockActions } from './Composer';
 import { Panel } from './Panel';
 import { SessionMenu, TitleInput, type SessionActions } from './SessionMenu';
 import { MetalSafe, Toaster, copyText, guard, toast } from './ui';
+import { canNotify, notifyOn, setNotify, systemNotify } from './notify';
 
 const Hero = lazy(() => import('./Hero'));
 const store = {
@@ -81,6 +82,12 @@ function Workspace() {
   const [renaming, setRenaming] = useState(false);
   const [side, setSide] = useState(false);
   const [panel, setPanel] = useState(() => store.get('avity.panel') === '1' && innerWidth > 1100);
+  const [acts, setActs] = useState<Record<string, Act>>({});
+  const [link, setLink] = useState<Link>('ok');
+  const [notif, setNotif] = useState(notifyOn);
+  const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
+  const agentsRef = useRef<Agent[]>([]);
+  agentsRef.current = agents;
   const sid = useRef<string | null>(null);
   const pid = useRef<number | null>(null);
   const feed = useRef<HTMLDivElement>(null);
@@ -109,15 +116,43 @@ function Workspace() {
     saveTimer.current = window.setTimeout(flushDraft, 600);
   }, [flushDraft]);
   useEffect(() => {
-    const hidden = () => { if (document.visibilityState === 'hidden') flushDraft(); };
-    document.addEventListener('visibilitychange', hidden);
+    const vis = () => {
+      const shown = document.visibilityState === 'visible';
+      setVisible(shown);
+      if (!shown) flushDraft();
+      else if (sid.current) markSeen(sid.current); // what finished while the tab was hidden is now in view
+    };
+    document.addEventListener('visibilitychange', vis);
     window.addEventListener('pagehide', flushDraft);
-    return () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', flushDraft); };
+    return () => { document.removeEventListener('visibilitychange', vis); window.removeEventListener('pagehide', flushDraft); };
   }, [flushDraft]);
+
+  // Activity of every session, open or not: live state from `state` events, plus finished turns not seen yet.
+  const track = useCallback((id: string, projectId: number, patch: Partial<Act>) => setActs((a) => ({ ...a, [id]: { ...a[id], projectId, ...patch } })), []);
+  const markSeen = (id: string) => setActs((a) => (a[id]?.unread ? { ...a, [id]: { ...a[id], unread: undefined } } : a));
+  const seed = useCallback((list: LiveActivity[]) => setActs((a) => {
+    const now = new Map(list.map((x) => [x.sessionId, x]));
+    const next: Record<string, Act> = {};
+    for (const [id, v] of Object.entries(a)) {
+      const x = now.get(id);
+      // Was working, isn't any more: it finished while we weren't listening.
+      const missed = v.busy && !x?.busy && id !== sid.current;
+      next[id] = { ...v, busy: !!x?.busy, waiting: !!x?.waiting, unread: missed ? v.unread ?? 'done' : v.unread };
+    }
+    for (const x of list) next[x.sessionId] ??= { projectId: x.projectId, busy: x.busy, waiting: x.waiting };
+    return next;
+  }), []);
 
   const loadSessions = useCallback(async (projectId: number) => {
     const rows = await api<SessionRow[]>(`/projects/${projectId}/sessions`);
     if (pid.current === projectId) setSessions(rows);
+    setActs((a) => {
+      const next: Record<string, Act> = {};
+      // Deleted sessions (and their sub-sessions) drop out, so an unseen result can't linger in the tab title.
+      for (const [id, v] of Object.entries(a)) if (v.projectId !== projectId) next[id] = v;
+      for (const r of rows) next[r.id] = { ...a[r.id], projectId, busy: !!r.busy, waiting: !!r.waiting };
+      return next;
+    });
     return rows;
   }, []);
 
@@ -129,6 +164,7 @@ function Workspace() {
     // Reopening the same session (stream reconnect) keeps what is being typed.
     if (id !== prev) { setDraft(snap.session.draft ?? ''); setRenaming(false); }
     sid.current = id;
+    markSeen(id);
     setSession(snap.session); setLive(snap.state); setItems(snap.items);
     focusItem.current = itemId ?? null;
     stick.current = itemId == null;
@@ -157,13 +193,13 @@ function Workspace() {
 
   // boot
   useEffect(() => {
-    api<{ agents: Agent[]; projects: Project[] }>('/state').then((st) => {
-      setAgents(st.agents); setProjects(st.projects);
+    api<{ agents: Agent[]; projects: Project[]; activity: LiveActivity[] }>('/state').then((st) => {
+      setAgents(st.agents); setProjects(st.projects); seed(st.activity);
       const [, p, s] = location.hash.match(/^#\/p\/(\d+)(?:\/s\/([\w-]+))?/) ?? [];
       const first = st.projects.find((x) => String(x.id) === (p ?? store.get('avity.project'))) ?? st.projects[0];
       if (first) openProject(first.id, s).catch(() => openProject(first.id));
     }).catch((e) => toast(e.message, true));
-  }, [openProject]);
+  }, [openProject, seed]);
 
   useEffect(() => {
     const pop = () => {
@@ -180,8 +216,34 @@ function Workspace() {
   // live events, batched per animation frame
   const queue = useRef(new Map<number, Item>());
   const frame = useRef(0);
+  /** A turn ended or failed, or an agent waits: a toast when the page is in view, else a system notification. */
+  const announce = useCallback((ev: { sessionId: string; projectId: number; kind: 'done' | 'error' | 'waiting'; title: string | null; agent: string | null; text: string }) => {
+    const shown = document.visibilityState === 'visible';
+    if (ev.sessionId === sid.current && shown) return; // already in front of the user
+    if (ev.kind !== 'waiting') track(ev.sessionId, ev.projectId, { unread: ev.kind }); // waiting shows from live state
+    const who = agentsRef.current.find((a) => a.id === ev.agent)?.name ?? 'L\'agent';
+    const head = { done: `${who} a terminé`, error: 'Échec', waiting: `${who} attend ta validation` }[ev.kind];
+    const title = `${head} · « ${ev.title ?? 'Nouvelle session'} »`;
+    const open = () => {
+      window.focus();
+      (ev.projectId === pid.current ? openSession(ev.sessionId) : openProject(ev.projectId, ev.sessionId)).catch((e) => toast(e.message, true));
+    };
+    if (shown) toast(title, ev.kind === 'error', { label: 'Ouvrir', onClick: open });
+    else systemNotify(title, ev.text, ev.sessionId, open);
+  }, [track, openSession, openProject]);
+
+  const resync = useCallback(async () => {
+    try {
+      seed((await api<{ activity: LiveActivity[] }>('/state')).activity);
+      if (pid.current) await loadSessions(pid.current);
+      if (sid.current) await openSession(sid.current);
+    } catch { /* the next reconnect tries again */ }
+  }, [seed, loadSessions, openSession]);
+
   useEffect(() => subscribe((ev) => {
     if (ev.type === 'sessions') { if (ev.projectId === pid.current) loadSessions(ev.projectId); return; }
+    if (ev.type === 'state') track(ev.sessionId, ev.projectId, { busy: ev.state.busy, waiting: !!ev.state.waiting });
+    if (ev.type === 'activity') { announce(ev); return; }
     if (ev.sessionId !== sid.current) return;
     if (ev.type === 'state') { setLive(ev.state); return; }
     if (ev.type === 'reset') {
@@ -206,7 +268,25 @@ function Workspace() {
         return next;
       });
     });
-  }, () => { if (sid.current) openSession(sid.current); }), [loadSessions, openSession]);
+  }, {
+    status: (s) => { setLink(s); if (s === 'ok') toast('Reconnecté au serveur.'); },
+    reconnect: resync,
+  }), [loadSessions, track, announce, resync]);
+
+  // Tab title: how many sessions wait for you or finished unseen, e.g. « (2) AvityOne ».
+  const pending = Object.entries(acts).filter(([id, a]) => (a.waiting || a.unread) && !(id === session?.id && visible)).length;
+  useEffect(() => { document.title = pending ? `(${pending}) AvityOne` : 'AvityOne'; }, [pending]);
+
+  const toggleNotify = guard(async () => {
+    if (!canNotify()) {
+      toast('Notifications système indisponibles ici : il faut HTTPS (ou localhost). Les alertes restent dans la page et le titre de l\'onglet.', true);
+      return;
+    }
+    const on = await setNotify(!notif);
+    setNotif(on);
+    toast(on ? 'Notifications activées : fin, échec ou validation requise, quand l\'onglet est en arrière-plan.'
+      : Notification.permission === 'denied' ? 'Notifications bloquées par le navigateur pour ce site.' : 'Notifications désactivées.', !on && Notification.permission === 'denied');
+  });
 
   useLayoutEffect(() => {
     const el = feed.current;
@@ -328,7 +408,7 @@ function Workspace() {
 
   return (
     <div className="app">
-      <Sidebar open={side} projects={projects} project={project} sessions={sessions} sessionId={session?.id ?? null} live={live} agents={agents}
+      <Sidebar open={side} projects={projects} project={project} sessions={sessions} sessionId={session?.id ?? null} live={live} agents={agents} acts={acts}
         onProject={(id) => openProject(id).catch((e) => toast(e.message, true))} onNewSession={newSession}
         onSession={(id, itemId) => openSession(id, itemId).catch((e) => toast(e.message, true))}
         onCreated={(p) => { setProjects((ps) => [...ps, p].sort((a, b) => a.name.localeCompare(b.name))); openProject(p.id); }} onClose={() => setSide(false)} />
@@ -369,9 +449,13 @@ function Workspace() {
           </span>
           {live?.worktree && <button className="chip" onClick={dockAct.merge} disabled={live.busy}><Icon name="merge" size={14} /><span className="hide-mobile">Merger</span></button>}
           {row && <SessionMenu session={row} busy={!!live?.busy} act={sessionAct} />}
+          <button className={`chip icon hide-mobile ${notif ? 'on' : ''}`} onClick={toggleNotify} aria-pressed={notif} aria-label="Notifications"
+            title={notif ? 'Notifications activées' : 'Être prévenu quand un agent termine, échoue ou attend ta validation'}><Icon name="bell" size={16} /></button>
           <button className={`chip icon ${panel ? 'on' : ''}`} title="Mémoire & contexte" aria-label="Mémoire et contexte" aria-pressed={panel}
             onClick={() => { setPanel(!panel); store.set('avity.panel', panel ? '0' : '1'); }}><Icon name="panel" size={16} /></button>
         </header>
+
+        {link === 'lost' && <div className="conn-banner" role="status"><Icon name="alert" size={14} />Connexion au serveur perdue, reconnexion…</div>}
 
         <div className="feed" ref={feed} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140; }}>
           <Feed items={items} live={live} project={project} agents={agents} act={feedAct} onSuggest={editDraft} />

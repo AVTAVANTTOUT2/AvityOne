@@ -12,7 +12,8 @@ Fonctions prévues pour AvityOne, regroupées par domaine. Quand une fonction es
   React + libraries.dev.
 - **Non publié** : gestion des sessions (renommage, épinglage, archivage, suppression, duplication), recherche dans
   l'historique des conversations, export Markdown, brouillons propres à chaque session, bifurcation, modification et
-  renvoi des messages, régénération, copie des réponses et des blocs de code, navigation entre sessions.
+  renvoi des messages, régénération, copie des réponses et des blocs de code, navigation entre sessions ; activité
+  des sessions en arrière-plan, notifications, état de la connexion, signalement des erreurs de mémoire et de contexte.
 
 Détail dans le [CHANGELOG](CHANGELOG.md).
 
@@ -115,10 +116,10 @@ Graphiti (graphe temporel), basic-memory (Markdown comme source de vérité).
 
 ## Activité et notifications
 
-- [ ] Suivi de l’activité des sessions non sélectionnées.
-- [ ] Notifications de fin, d’échec et d’autorisation en attente.
-- [ ] Indicateur de déconnexion et de reconnexion.
-- [ ] Signalement des erreurs de chargement de la mémoire et du contexte.
+- [x] Suivi de l’activité des sessions non sélectionnées.
+- [x] Notifications de fin, d’échec et d’autorisation en attente.
+- [x] Indicateur de déconnexion et de reconnexion.
+- [x] Signalement des erreurs de chargement de la mémoire et du contexte.
 
 ## Mobile et dictée
 

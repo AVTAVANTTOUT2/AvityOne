@@ -27,7 +27,9 @@ function MemoryTab({ project }: { project: Project }) {
   const [data, setData] = useState<{ memory: Memory[]; docs: { path: string; text: string }[]; kbChunks: number }>({ memory: [], docs: [], kbChunks: 0 });
   const [kind, setKind] = useState('fact');
   const [text, setText] = useState('');
-  const load = useCallback(() => api(`/projects/${project.id}/memory${q ? `?q=${encodeURIComponent(q)}` : ''}`).then(setData).catch(() => {}), [project.id, q]);
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api(`/projects/${project.id}/memory${q ? `?q=${encodeURIComponent(q)}` : ''}`)
+    .then((d) => { setData(d); setErr(''); }, (e) => setErr(e.message)), [project.id, q]);
   useEffect(() => { const t = setTimeout(load, q ? 220 : 0); return () => clearTimeout(t); }, [load, q]);
   return (
     <div className="panel-body">
@@ -35,10 +37,16 @@ function MemoryTab({ project }: { project: Project }) {
       <div className="stat">
         <span className="tag">{data.memory.length} connaissance{data.memory.length > 1 ? 's' : ''}{q ? ' trouvée(s)' : ''}</span>
         <span className="tag">{data.kbChunks} extraits de docs</span>
-        <button className="chip sm" onClick={guard(async () => { const r = await api(`/projects/${project.id}/reindex`, {}); toast(`${r.chunks} extraits indexés.`); load(); })}>
+        <button className="chip sm" onClick={guard(async () => {
+          const r = await api<{ chunks: number; failed: string[] }>(`/projects/${project.id}/reindex`, {});
+          const bad = r.failed.length;
+          toast(`${r.chunks} extraits indexés.${bad ? ` ${bad} fichier(s) illisible(s) : ${r.failed.slice(0, 3).join(', ')}${bad > 3 ? '…' : ''}` : ''}`, bad > 0);
+          load();
+        })}>
           <Icon name="refresh" size={12} />Réindexer
         </button>
       </div>
+      {err && <div className="panel-err" role="alert">Mémoire indisponible : {err}</div>}
       <form className="row" onSubmit={guard(async (e) => {
         e.preventDefault();
         if (!text.trim()) return;
@@ -67,10 +75,12 @@ function MemoryTab({ project }: { project: Project }) {
 
 function ContextTab({ sessionId, draft }: { sessionId: string | null; draft: string }) {
   const [q, setQ] = useState('');
-  const [pack, setPack] = useState<{ text: string; stats: string } | null>(null);
+  const [pack, setPack] = useState<{ text: string; stats: string; warnings: string[] } | null>(null);
+  const [err, setErr] = useState('');
   useEffect(() => {
     if (!sessionId) return;
-    const t = setTimeout(() => api(`/sessions/${sessionId}/context?q=${encodeURIComponent(q || draft)}`).then(setPack).catch(() => {}), 250);
+    const t = setTimeout(() => api(`/sessions/${sessionId}/context?q=${encodeURIComponent(q || draft)}`)
+      .then((p) => { setPack(p); setErr(''); }, (e) => setErr(e.message)), 250);
     return () => clearTimeout(t);
   }, [sessionId, q, draft]);
   if (!sessionId) return <div className="panel-body"><p className="muted">Ouvre une session.</p></div>;
@@ -78,6 +88,8 @@ function ContextTab({ sessionId, draft }: { sessionId: string | null; draft: str
     <div className="panel-body">
       <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>Ce que reçoit un agent au démarrage d'une session : brief, état git, mémoire, docs, sessions récentes.</p>
       <input className="input" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Simuler pour une demande…" />
+      {err && <div className="panel-err" role="alert">Contexte indisponible : {err}</div>}
+      {pack?.warnings.map((w) => <div key={w} className="panel-err">Contexte partiel : {w}</div>)}
       {pack && <div className="stat">{pack.stats.split(', ').map((s) => <span key={s} className="tag">{s}</span>)}</div>}
       <pre className="ctx">{pack?.text ?? '…'}</pre>
     </div>
