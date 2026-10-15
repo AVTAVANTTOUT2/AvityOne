@@ -7,6 +7,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Ajouté
 
+- **CI/CD preprod → prod** : CI GitHub Actions (types, tests, build) sur les PR vers `preprod` et `main` ; chaque merge
+  sur `preprod` redéploie la VM preprod, chaque merge `preprod` → `main` redéploie la prod (`deploy/autodeploy.sh`).
 - **Gestion des sessions** : menu « ⋯ » dans l'en-tête de la session pour renommer (ou double-clic sur le titre),
   épingler, archiver et supprimer. Les sessions épinglées passent en tête de liste, les archivées sont repliées en bas.
   Un titre choisi n'est plus écrasé par les résumés automatiques ; un titre vidé revient au nommage automatique.
@@ -18,6 +20,9 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   `avity export <session>`.
 - **Brouillons par session**, enregistrés sur le serveur : chaque session garde le sien, d'un appareil à l'autre et
   après rechargement.
+- Interface ([#5](https://github.com/AVTAVANTTOUT2/AvityOne/pull/5)) : bouton « aller au dernier message », copie
+  des blocs de code, réglages modèle/effort accessibles sur mobile, premier message possible dans un projet sans
+  session (il en ouvre une).
 - **Bifurcation et duplication** : « Bifurquer ici » sous chaque réponse ouvre une nouvelle session qui reprend la
   conversation jusqu'à ce point ; « Dupliquer » (menu « ⋯ ») la copie en entier. L'original reste intact. La copie
   repart avec un agent neuf qui reçoit le transcript copié, et sans les fichiers d'un éventuel worktree. Son en-tête
@@ -26,8 +31,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   conversation (l'agent repart avec ce qui précède) ; « Dans une bifurcation » garde la conversation et repart de ce
   message dans une nouvelle session. Les fichiers déjà modifiés par l'agent ne sont pas restaurés.
 - **Régénération** de la dernière réponse, avec le même agent ou un autre, et « Réessayer » après un tour en échec.
-- **Copie** d'un message, d'une réponse entière ou d'un bloc de code (bouton au survol). Fonctionne aussi en HTTP
-  simple, où l'API presse-papiers du navigateur est indisponible.
+- **Copie** d'un message ou d'une réponse entière (en plus des blocs de code, déjà copiables depuis #5), y compris en
+  HTTP simple.
 - **Navigation entre sessions** : boutons ‹ › de l'en-tête et Alt+↑ / Alt+↓ dans l'ordre de la liste ; les boutons
   précédent/suivant du navigateur (et le retour Android) parcourent les sessions visitées.
 - **Activité des sessions en arrière-plan** : une pastille par session et par projet signale ce qui attend ta
@@ -63,6 +68,16 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   projet : il est maintenant ignoré et signalé.
 - Les petits boutons icône (« + » des projets et des sessions, « Oublier » de la mémoire) n'affichaient qu'un point :
   la marge de `.chip.sm` écrasait l'icône.
+- Sans WebGL (GPU désactivé ou en liste noire, navigateur verrouillé, VM), l'interface restait blanche dès l'écran de
+  connexion : le shader `img-fx` levait une erreur non rattrapée. La couverture statique le remplace désormais, aussi
+  en rendu WebGL logiciel (SwiftShader, llvmpipe), où les shaders figeaient la page. Une error boundary contient les
+  échecs tardifs du renderer. `metal-fx` n'est plus monté sans WebGL matériel : son repli laissait un contour
+  « AvityOne » en haut à gauche de la page ([#5](https://github.com/AVTAVANTTOUT2/AvityOne/pull/5),
+  [#7](https://github.com/AVTAVANTTOUT2/AvityOne/pull/7)).
+- Interface ([#5](https://github.com/AVTAVANTTOUT2/AvityOne/pull/5)) : menu de choix de l'agent rogné par le
+  composer, chemin de projet mal affiché, chronomètre aberrant au premier tour, outils restés « en cours » après un
+  arrêt, double envoi des autorisations, ouvertures de session concurrentes. Sur mobile : menu latéral refermable,
+  zoom iOS sur les champs, zone de l'indicateur d'accueil (safe area), débordements horizontaux.
 
 ### Modifié
 

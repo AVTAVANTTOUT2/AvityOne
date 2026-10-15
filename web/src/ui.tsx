@@ -1,5 +1,6 @@
-// Shared primitives: markdown, diff, liquid segmented control, liquid plus-menu, popover, toasts.
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
+// Shared primitives: markdown, diff, liquid segmented control, liquid plus-menu, popover, toasts, error boundary.
+import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { Liquid } from 'liquid-gooey';
@@ -9,42 +10,34 @@ DOMPurify.addHook('afterSanitizeAttributes', (n) => {
   if (n.tagName === 'A') { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); }
 });
 
-/**
- * Agent output is untrusted (prompt injection can reach it): always sanitized. Code blocks get a copy button,
- * added as fixed markup around the already-sanitized <pre>, and handled by one delegated click.
- */
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text ?? '', { async: false, gfm: true }) as string)
-    .replace(/<pre(\s[^>]*)?>/g, '<div class="code-block"><button type="button" class="code-copy" data-copy-code="" aria-label="Copier le code">Copier</button>$&')
-    .replace(/<\/pre>/g, '</pre></div>'), [text]);
-  return <div className="md" onClick={copyCode} dangerouslySetInnerHTML={{ __html: html }} />;
-});
+const COPY = '<button type="button" class="copy" title="Copier" aria-label="Copier le code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9.5A1.5 1.5 0 0 1 10.5 8h7A1.5 1.5 0 0 1 19 9.5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 9 18.5ZM15 8V5.5A1.5 1.5 0 0 0 13.5 4h-7A1.5 1.5 0 0 0 5 5.5v9A1.5 1.5 0 0 0 6.5 16H9"/></svg></button>';
 
-function copyCode(e: MouseEvent<HTMLDivElement>) {
-  const pre = (e.target as Element).closest('[data-copy-code]')?.nextElementSibling;
-  if (pre) copyText(pre.textContent ?? '');
-}
-
-/** The Clipboard API needs HTTPS or localhost; the UI is often served over plain HTTP on a LAN, hence the fallback. */
+/** Clipboard API where the page is a secure context, else the legacy copy command (plain http on a LAN or Tailscale IP). */
 export async function copyText(text: string) {
-  try {
-    if (!window.isSecureContext || !navigator.clipboard) throw new Error('clipboard');
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const prev = document.activeElement as HTMLElement | null;
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
-    document.body.append(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    prev?.focus();
-    if (!ok) return toast('Copie impossible dans ce navigateur.', true);
-  }
-  toast('Copié dans le presse-papiers.');
+  if (window.isSecureContext && navigator.clipboard) return navigator.clipboard.writeText(text);
+  const ta = Object.assign(document.createElement('textarea'), { value: text });
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.append(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  if (!ok) throw new Error('copie refusée par le navigateur');
 }
+
+/** Agent output is untrusted (prompt injection can reach it): always sanitized. Our copy button is added after sanitizing. */
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text ?? '', { async: false, gfm: true }) as string).replaceAll('<pre>', `<pre>${COPY}`), [text]);
+  const copy = (e: MouseEvent) => {
+    const b = (e.target as Element).closest<HTMLButtonElement>('button.copy');
+    const code = b?.parentElement?.querySelector('code') ?? b?.parentElement;
+    if (!b || !code) return;
+    copyText(code.textContent ?? '').then(() => {
+      b.classList.add('done');
+      setTimeout(() => b.classList.remove('done'), 1200);
+    }, (err) => toast(err.message, true));
+  };
+  return <div className="md" onClick={copy} dangerouslySetInnerHTML={{ __html: html }} />;
+});
 
 /** Line diff via LCS, unchanged runs folded to 3 lines of context. */
 export function Diff({ path, oldText, newText }: { path: string; oldText?: string; newText?: string }) {
@@ -114,7 +107,7 @@ export type DropAction = { icon: IconName; label: string; on?: boolean; disabled
 export function PlusMenu({ actions }: { actions: DropAction[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useOutside(ref, open, () => setOpen(false));
+  useOutside([ref], open, () => setOpen(false));
   const step = 34;
   return (
     <div ref={ref} className="plus-wrap" style={{ width: open ? 30 + actions.length * step : 30, transition: 'width 380ms var(--ease)' }}>
@@ -135,27 +128,48 @@ export function PlusMenu({ actions }: { actions: DropAction[] }) {
   );
 }
 
-export function useOutside(ref: RefObject<HTMLElement | null>, active: boolean, close: () => void) {
+/** Calls `close` on a pointer down outside every ref'd element, or on Escape. */
+export function useOutside(refs: RefObject<HTMLElement | null>[], active: boolean, close: (how: 'outside' | 'escape') => void) {
   useEffect(() => {
     if (!active) return;
-    const down = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) close(); };
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    const down = (e: PointerEvent) => { if (!refs.some((r) => r.current?.contains(e.target as Node))) close('outside'); };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close('escape'); };
     document.addEventListener('pointerdown', down);
     document.addEventListener('keydown', key);
     return () => { document.removeEventListener('pointerdown', down); document.removeEventListener('keydown', key); };
-  }, [active, close, ref]);
+  }, [active, close, refs]);
 }
 
-/** Trigger + floating menu, closed on outside click / Escape. */
+/**
+ * Trigger + floating menu, closed on outside click / Escape. The menu is portalled to <body> with fixed coordinates:
+ * the composer's glow clips its content (`overflow: hidden`), which used to cut the agent menu down to one row.
+ */
 export function Popover({ trigger, children, down }: { trigger: (toggle: () => void, open: boolean) => ReactNode; children: (close: () => void) => ReactNode; down?: boolean }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const close = useMemo(() => () => setOpen(false), []);
-  useOutside(ref, open, close);
+  const [at, setAt] = useState<CSSProperties>({});
+  const anchor = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const refs = useMemo(() => [anchor, menu], []);
+  const close = useCallback((how?: 'outside' | 'escape') => {
+    setOpen(false);
+    if (how === 'escape') anchor.current?.querySelector('button')?.focus();
+  }, []);
+  useOutside(refs, open, close);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = anchor.current!.getBoundingClientRect();
+      setAt(down ? { top: r.bottom + 8, right: Math.max(8, innerWidth - r.right) } : { bottom: innerHeight - r.top + 8, left: Math.max(8, r.left) });
+    };
+    place();
+    menu.current?.querySelector<HTMLElement>('button:not(:disabled), select')?.focus({ preventScroll: true });
+    addEventListener('resize', place);
+    return () => removeEventListener('resize', place);
+  }, [open, down]);
   return (
-    <div className="menu-anchor" ref={ref}>
+    <div className="menu-anchor" ref={anchor}>
       {trigger(() => setOpen((o) => !o), open)}
-      {open && <div className={`menu ${down ? 'down' : ''}`} role="menu">{children(close)}</div>}
+      {open && createPortal(<div ref={menu} className={`menu ${down ? 'down' : ''}`} role="menu" style={at}>{children(() => close())}</div>, document.body)}
     </div>
   );
 }
@@ -191,14 +205,41 @@ export const guard = <A extends unknown[]>(fn: (...a: A) => Promise<unknown> | u
   try { await fn(...a); } catch (e) { toast((e as Error).message, true); }
 };
 
+/** Keeps a crashing subtree (refused WebGL context, lost GPU…) to its own box instead of blanking the whole app. */
+export class Boundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(e: unknown) { console.warn('[avity] affichage de secours :', e); }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+let gl: boolean | undefined;
+/**
+ * Hardware WebGL is available. Software rendering counts as no: the shaders crawl there (well under 1 fps on the login
+ * screen) and freeze the whole page. Browsers do not always flag it as a performance caveat, hence the renderer name.
+ */
+export const webgl = () => gl ??= (() => {
+  try {
+    const c = document.createElement('canvas');
+    const x = c.getContext('webgl2', { failIfMajorPerformanceCaveat: true }) ?? c.getContext('webgl', { failIfMajorPerformanceCaveat: true });
+    if (!x) return false;
+    const info = x.getExtension('WEBGL_debug_renderer_info');
+    const renderer = String(x.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : x.RENDERER));
+    x.getExtension('WEBGL_lose_context')?.loseContext();
+    return !/swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer);
+  } catch { return false; }
+})();
+
 /**
  * metal-fx keeps its host invisible until the first WebGL frame lands. If that never happens (context lost,
- * GPU blocklisted…), fall back to the plain element so a primary control can never vanish.
+ * GPU blocklisted…), fall back to the plain element so a primary control can never vanish. Without hardware WebGL,
+ * metal-fx isn't mounted at all: its own fallback leaves MetalText's rim canvas stranded in the page's top-left corner.
  */
 export function MetalSafe({ children, fallback }: { children: ReactNode; fallback: ReactNode }) {
   const wrap = useRef<HTMLSpanElement>(null);
-  const [ok, setOk] = useState(true);
+  const [ok, setOk] = useState(webgl);
   useEffect(() => {
+    if (!ok) return;
     let tries = 0;
     const i = setInterval(() => {
       if (document.hidden) return;
@@ -207,6 +248,6 @@ export function MetalSafe({ children, fallback }: { children: ReactNode; fallbac
       if (++tries >= 3) { clearInterval(i); setOk(false); }
     }, 1000);
     return () => clearInterval(i);
-  }, []);
-  return ok ? <span ref={wrap} style={{ display: 'contents' }}>{children}</span> : <>{fallback}</>;
+  }, [ok]);
+  return ok ? <Boundary fallback={fallback}><span ref={wrap} style={{ display: 'contents' }}>{children}</span></Boundary> : <>{fallback}</>;
 }

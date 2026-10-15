@@ -1,17 +1,16 @@
 // The conversation: messages, tool timeline, plans, permissions, reviews and parallel runs.
-import { lazy, memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { BorderBeam } from 'border-beam';
 import { ThinkingOrb, type OrbState } from 'thinking-orbs';
 import { Liquid } from 'liquid-gooey';
 import type { Agent, Item, LiveState, Project } from './api';
-import { AgentAvatar, ORB_FOR_KIND, LOOKS } from './brand';
+import { AgentAvatar, Cover, ORB_FOR_KIND, LOOKS } from './brand';
 import { Icon, KIND_ICON } from './icons';
 import { Diff, Markdown, Popover } from './ui';
 
-const Hero = lazy(() => import('./Hero'));
-
 export type FeedActions = {
-  permission: (permId: number, optionId: string) => void;
+  /** Resolves false when the answer did not reach the agent, so the buttons can be used again. */
+  permission: (permId: number, optionId: string) => Promise<boolean>;
   openSession: (id: string) => void;
   merge: () => void;
   useText: (text: string) => void;
@@ -28,6 +27,7 @@ type Turn = { copy: string; before?: number };
 const STATUS: Record<string, [string, string]> = {
   pending: ['en attente', 'run'], in_progress: ['en cours', 'run'], running: ['en cours', 'run'], waiting: ['validation requise', 'plan'],
   completed: ['terminé', 'ok'], done: ['terminé', 'ok'], merged: ['mergé', 'ok'], failed: ['échec', 'bad'], error: ['erreur', 'bad'], conflict: ['conflit', 'bad'],
+  interrupted: ['interrompu', ''],
 };
 const Status = ({ s }: { s: string }) => { const [label, cls] = STATUS[s] ?? [s, '']; return <span className={`tag ${cls}`}>{label}</span>; };
 
@@ -52,6 +52,9 @@ export function activity(items: Item[], live: LiveState | null): { orb: OrbState
   return { orb: 'connecting', label: 'démarre' };
 }
 
+/** What the agent itself produces during a turn: the turn's agent header goes above the first of them. */
+const AGENT_ITEMS = new Set(['thought', 'tool', 'plan', 'assistant', 'permission']);
+
 export function Feed({ items, live, project, agents, act, onSuggest }: {
   items: Item[]; live: LiveState | null; project: Project | null; agents: Agent[]; act: FeedActions; onSuggest: (text: string) => void;
 }) {
@@ -72,22 +75,27 @@ export function Feed({ items, live, project, agents, act, onSuggest }: {
   if (!items.length) return <Empty project={project} agents={agents} onSuggest={onSuggest} />;
   const busy = !!live?.busy;
   let headShown = false;
+  let turnAgent: string | undefined;
   return (
     <div className="feed-inner">
       {items.map((it, i) => {
-        if (it.type === 'user') headShown = false;
+        if (it.type === 'user') { headShown = false; turnAgent = it.agent; }
         const latest = i > lastUser;
-        const showHead = it.type === 'assistant' && !headShown;
-        if (it.type === 'assistant') headShown = true;
+        const working = latest && busy;
+        const head = AGENT_ITEMS.has(it.type) && !headShown;
+        if (head) headShown = true;
         const t = it.type === 'end' ? turns.get(it.id) : undefined;
         // Only rows with actions get `busy`, so a turn starting or ending doesn't re-render the whole feed.
         const actionable = it.type === 'user' || it.type === 'end' || it.id === retry;
-        // data-item lets a history-search hit scroll to its message.
         return (
-          <div key={it.id} className="feed-item" data-item={it.id}>
-            <Row it={it} head={showHead} live={latest && busy} latest={latest} agents={agents} act={act}
-              busy={actionable ? busy : undefined} copy={t?.copy} before={t?.before} retry={it.id === retry} />
-          </div>
+          <Fragment key={it.id}>
+            {head && <AgentHead id={it.agent ?? turnAgent} agents={agents} working={working} latest={latest} />}
+            {/* data-item lets a history-search hit scroll to its message. */}
+            <div className="feed-item" data-item={it.id}>
+              <Row it={it} live={working} latest={latest} agents={agents} act={act}
+                busy={actionable ? busy : undefined} copy={t?.copy} before={t?.before} retry={it.id === retry} />
+            </div>
+          </Fragment>
         );
       })}
     </div>
@@ -96,23 +104,24 @@ export function Feed({ items, live, project, agents, act, onSuggest }: {
 
 const agentName = (agents: Agent[], id?: string) => agents.find((a) => a.id === id)?.name ?? id ?? 'Agent';
 
-const Row = memo(function Row({ it, head, live, latest, agents, act, busy = false, copy, before, retry }: {
-  it: Item; head: boolean; live: boolean; latest: boolean; agents: Agent[]; act: FeedActions;
+function AgentHead({ id, agents, working, latest }: { id?: string; agents: Agent[]; working: boolean; latest: boolean }) {
+  return (
+    <div className="agent-head">
+      <AgentAvatar id={id} size={32} state={working ? 'working' : 'default'} paused={!latest} />
+      <span className="who">{agentName(agents, id)}</span>
+    </div>
+  );
+}
+
+const Row = memo(function Row({ it, live, latest, agents, act, busy = false, copy, before, retry }: {
+  it: Item; live: boolean; latest: boolean; agents: Agent[]; act: FeedActions;
   busy?: boolean; copy?: string; before?: number; retry?: boolean;
 }) {
   switch (it.type) {
     case 'user':
       return <UserMessage it={it} agents={agents} busy={busy} act={act} />;
     case 'assistant':
-      return (
-        <div className={`msg-agent ${head ? '' : 'cont'}`}>
-          <div className="avatar-col">{head && <AgentAvatar id={it.agent} size={32} state={live ? 'working' : 'default'} paused={!latest} />}</div>
-          <div>
-            {head && <div className="who">{agentName(agents, it.agent)}</div>}
-            <Markdown text={it.text} />
-          </div>
-        </div>
-      );
+      return <div className="msg-agent"><Markdown text={it.text} /></div>;
     case 'thought':
       return (
         <details className="thought">
@@ -121,7 +130,8 @@ const Row = memo(function Row({ it, head, live, latest, agents, act, busy = fals
         </details>
       );
     case 'tool': {
-      const running = live && (it.status === 'pending' || it.status === 'in_progress');
+      const open = it.status === 'pending' || it.status === 'in_progress';
+      const running = live && open;
       const body = it.command || it.paths?.length || it.diffs?.length || it.output;
       return (
         <details className="tool">
@@ -129,7 +139,7 @@ const Row = memo(function Row({ it, head, live, latest, agents, act, busy = fals
             <span className="glyph">{running ? <ThinkingOrb state={ORB_FOR_KIND[it.kind] ?? 'working'} size={20} /> : <Icon name={KIND_ICON[it.kind] ?? 'plug'} size={15} />}</span>
             <span className="t grow ellipsis">{it.title}</span>
             {it.diffs?.length ? <span className="muted mono" style={{ fontSize: 11 }}>{it.diffs.length} fichier{it.diffs.length > 1 ? 's' : ''}</span> : null}
-            {it.status !== 'completed' && <Status s={running ? it.status : it.status === 'failed' ? 'failed' : it.status} />}
+            {it.status !== 'completed' && <Status s={open && !running ? 'interrupted' : it.status} />}
             {body ? <Icon className="chev" name="chevronRight" size={14} /> : null}
           </summary>
           {body ? (
@@ -157,26 +167,8 @@ const Row = memo(function Row({ it, head, live, latest, agents, act, busy = fals
           </div>
         </div>
       );
-    case 'permission': {
-      const planGate = it.kind === 'switch_mode';
-      const card = (
-        <div className="card fcard">
-          <div className="fcard-head">
-            {it.resolved ? <span className="icon-tile"><Icon name={planGate ? 'play' : 'shield'} size={15} /></span> : <ThinkingOrb state="breathing" size={20} />}
-            {planGate ? 'Plan prêt — on l\'exécute ?' : 'Autorisation demandée'}
-            <span className="muted grow ellipsis">{it.title}</span>
-          </div>
-          {it.text && <div className="stage perm-text"><Markdown text={it.text} /></div>}
-          <div className="fcard-actions">
-            {it.resolved ? <span className="muted" style={{ fontSize: 12 }}>→ {it.resolved}</span>
-              : it.options.length ? it.options.map((o: any) => (
-                <button key={o.id} className={`btn ${o.kind.startsWith('allow') ? 'primary' : 'ghost'}`} onClick={() => act.permission(it.id, o.id)}>{o.name}</button>
-              )) : <span className="muted" style={{ fontSize: 12 }}>Utilise « Exécuter le plan » ci-dessous.</span>}
-          </div>
-        </div>
-      );
-      return it.resolved ? card : <BorderBeam size="pulse-inner" colorVariant={planGate ? 'ocean' : 'sunset'} theme="dark" duration={2.6}>{card}</BorderBeam>;
-    }
+    case 'permission':
+      return <Permission it={it} act={act} />;
     case 'review': {
       const running = it.status === 'running';
       const card = (
@@ -233,7 +225,7 @@ function UserMessage({ it, agents, busy, act }: { it: Item; agents: Agent[]; bus
         <AgentAvatar id={it.agent} size={16} paused />
         <span>{agentName(agents, it.agent)}</span>
         {it.mode === 'plan' && <span className="tag plan">plan</span>}
-        <span>· {it.reason}</span>
+        <span className="ellipsis" title={it.reason}>· {it.reason?.startsWith('règle /') ? 'règle de routage' : it.reason}</span>
         {it.edited && <span>· modifié</span>}
         {it.regenerated && <span>· régénéré</span>}
       </div>
@@ -316,6 +308,29 @@ function TurnEnd({ it, copy, before, busy, agents, act }: { it: Item; copy: stri
   );
 }
 
+function Permission({ it, act }: { it: Item; act: FeedActions }) {
+  const [sent, setSent] = useState(false);
+  const planGate = it.kind === 'switch_mode';
+  const card = (
+    <div className="card fcard">
+      <div className="fcard-head">
+        {it.resolved ? <span className="icon-tile"><Icon name={planGate ? 'play' : 'shield'} size={15} /></span> : <ThinkingOrb state="breathing" size={20} />}
+        {planGate ? 'Plan prêt — on l\'exécute ?' : 'Autorisation demandée'}
+        <span className="muted grow ellipsis">{it.title}</span>
+      </div>
+      {it.text && <div className="stage perm-text"><Markdown text={it.text} /></div>}
+      <div className="fcard-actions">
+        {it.resolved ? <span className="muted" style={{ fontSize: 12 }}>→ {it.resolved}</span>
+          : it.options.length ? it.options.map((o: any) => (
+            <button key={o.id} className={`btn ${o.kind.startsWith('allow') ? 'primary' : 'ghost'}`} disabled={sent}
+              onClick={() => { setSent(true); act.permission(it.id, o.id).then((ok) => { if (!ok) setSent(false); }); }}>{o.name}</button>
+          )) : <span className="muted" style={{ fontSize: 12 }}>Utilise « Exécuter le plan » ci-dessous.</span>}
+      </div>
+    </div>
+  );
+  return it.resolved ? card : <BorderBeam size="pulse-inner" colorVariant={planGate ? 'ocean' : 'sunset'} theme="dark" duration={2.6}>{card}</BorderBeam>;
+}
+
 /** Sub-sessions as liquid droplets: they split apart when the work fans out and flow back together once merged. */
 function Parallel({ it, agents, act }: { it: Item; agents: Agent[]; act: FeedActions }) {
   const kids: any[] = it.children;
@@ -371,8 +386,13 @@ function Empty({ project, agents, onSuggest }: { project: Project | null; agents
       <div className="empty">
         {project && (
           <div className="card empty-hero">
-            <div className="stage"><Suspense fallback={null}><Hero seed={project.name} /></Suspense></div>
-            <div className="hero-meta"><Icon name="folder" size={15} className="muted" /><span className="ellipsis" style={{ flex: "none", maxWidth: "45%" }}>{project.name}</span><span className="muted mono ellipsis grow" style={{ fontSize: 11, direction: "rtl", textAlign: "right" }} title={project.path}>{project.path}</span></div>
+            <div className="stage"><Cover key={project.name} seed={project.name} /></div>
+            <div className="hero-meta">
+              <Icon name="folder" size={15} className="muted" />
+              <span className="ellipsis" style={{ flex: 'none', maxWidth: '45%' }}>{project.name}</span>
+              {/* rtl keeps the end of the path visible; the LRMs stop it from moving the leading « / » to the end */}
+              <span className="muted mono ellipsis grow path" title={project.path}>{`\u200e${project.path}\u200e`}</span>
+            </div>
           </div>
         )}
         <h2>Que construit-on aujourd'hui ?</h2>

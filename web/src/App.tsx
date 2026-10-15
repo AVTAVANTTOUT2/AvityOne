@@ -1,19 +1,18 @@
 // App shell: auth, data loading, live event stream, and the three-column layout.
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { MetalFx, MetalText } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
 import { api, subscribe, type Act, type Agent, type Item, type Link, type LiveActivity, type LiveState, type Project, type SessionRow, type Snapshot } from './api';
-import { AgentAvatar, LogoMark } from './brand';
+import { AgentAvatar, Cover, LogoMark } from './brand';
 import { Icon } from './icons';
 import { Sidebar } from './Sidebar';
 import { Feed, activity, type FeedActions } from './Feed';
 import { Dock, type DockActions } from './Composer';
 import { Panel } from './Panel';
 import { SessionMenu, TitleInput, type SessionActions } from './SessionMenu';
-import { MetalSafe, Toaster, copyText, guard, toast } from './ui';
+import { Boundary, MetalSafe, Popover, Toaster, copyText, guard, toast } from './ui';
 import { canNotify, notifyOn, setNotify, systemNotify } from './notify';
 
-const Hero = lazy(() => import('./Hero'));
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
@@ -32,10 +31,24 @@ export function App() {
   }, []);
   return (
     <>
-      {authed === false && <Login onDone={() => location.reload()} />}
-      {authed && <Workspace />}
+      <Boundary fallback={<Crashed />}>
+        {authed === false && <Login onDone={() => location.reload()} />}
+        {authed && <Workspace />}
+      </Boundary>
       <Toaster />
     </>
+  );
+}
+
+function Crashed() {
+  return (
+    <div className="login">
+      <div className="card dialog crashed" role="alert">
+        <h3><Icon name="alert" size={18} />L'interface a rencontré une erreur</h3>
+        <p className="muted">Tes sessions continuent de tourner sur le serveur : recharger ne perd rien.</p>
+        <button className="btn primary" onClick={() => location.reload()}><Icon name="refresh" size={14} />Recharger</button>
+      </div>
+    </div>
   );
 }
 
@@ -49,7 +62,7 @@ function Login({ onDone }: { onDone: () => void }) {
   return (
     <div className="login">
       <div className="card login-card">
-        <div className="stage login-hero"><Suspense fallback={null}><Hero seed="avityone" auto count={4} /></Suspense></div>
+        <div className="stage login-hero"><Cover seed="avityone" auto count={4} /></div>
         <form className="login-form" onSubmit={submit}>
           <h1><LogoMark size={24} /><MetalSafe fallback="AvityOne"><MetalText font="500 22px/1 Inter, sans-serif" color="#ededed">AvityOne</MetalText></MetalSafe></h1>
           <p>Ton orchestrateur Claude Code · Codex · Cursor · OpenCode.</p>
@@ -88,10 +101,16 @@ function Workspace() {
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
   const agentsRef = useRef<Agent[]>([]);
   agentsRef.current = agents;
+  const [away, setAway] = useState(false); // scrolled up, away from the latest output
   const sid = useRef<string | null>(null);
   const pid = useRef<number | null>(null);
+  const known = useRef<Project[]>([]);
+  const opening = useRef(0);
   const feed = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const stick = useRef(true);
+  const queue = useRef(new Map<number, Item>());
+  const frame = useRef(0);
   const focusItem = useRef<number | null>(null);
   const fromHistory = useRef(false); // browser back/forward: follow the URL without stacking a new entry
 
@@ -150,7 +169,9 @@ function Workspace() {
       const next: Record<string, Act> = {};
       // Deleted sessions (and their sub-sessions) drop out, so an unseen result can't linger in the tab title.
       for (const [id, v] of Object.entries(a)) if (v.projectId !== projectId) next[id] = v;
-      for (const r of rows) next[r.id] = { ...a[r.id], projectId, busy: !!r.busy, waiting: !!r.waiting };
+      // Rows only seed what live `state` events haven't told us yet: a list fetched while a turn ran can land after
+      // its end and would otherwise leave the session « busy ».
+      for (const r of rows) next[r.id] = a[r.id] ? { ...a[r.id], projectId } : { projectId, busy: !!r.busy, waiting: !!r.waiting };
       return next;
     });
     return rows;
@@ -159,15 +180,23 @@ function Workspace() {
   /** Opens a session; with `itemId`, scrolls to that message (history search) instead of the bottom. */
   const openSession = useCallback(async (id: string, itemId?: number) => {
     flushDraft();
+    const n = ++opening.current;
     const snap = await api<Snapshot>(`/sessions/${id}`);
+    if (n !== opening.current) return; // a later click won the race
     const prev = sid.current;
-    // Reopening the same session (stream reconnect) keeps what is being typed.
-    if (id !== prev) { setDraft(snap.session.draft ?? ''); setRenaming(false); }
+    // Reopening the same session (stream reconnect) keeps what is being typed. So does opening one from no session
+    // (« + » or a project's first message): the composer is live meanwhile, and that text is for this session.
+    if (id !== prev) {
+      const fromNone = prev === null;
+      setDraft((typed) => snap.session.draft ?? (fromNone ? typed : ''));
+      setRenaming(false);
+    }
     sid.current = id;
     markSeen(id);
+    queue.current.clear();
     setSession(snap.session); setLive(snap.state); setItems(snap.items);
     focusItem.current = itemId ?? null;
-    stick.current = itemId == null;
+    stick.current = itemId == null; setAway(itemId != null);
     // Each session switch is a history entry: back/forward (and Android's back button) walk the visited sessions.
     const url = `#/p/${snap.session.project_id}/s/${id}`;
     if (location.hash !== url) history[prev && prev !== id && !fromHistory.current ? 'pushState' : 'replaceState'](null, '', url);
@@ -177,13 +206,14 @@ function Workspace() {
   const closeSession = useCallback((projectId: number) => {
     flushDraft();
     const had = sid.current;
+    opening.current++; // an open still in flight must not land after this
     sid.current = null; setSession(null); setLive(null); setItems([]); setDraft('');
     history[had && !fromHistory.current ? 'pushState' : 'replaceState'](null, '', `#/p/${projectId}`);
   }, [flushDraft]);
 
   const openProject = useCallback(async (id: number, sessionId?: string) => {
     pid.current = id;
-    setProject((await api<{ projects: Project[] }>('/state')).projects.find((p) => p.id === id) ?? null);
+    setProject(known.current.find((p) => p.id === id) ?? null);
     store.set('avity.project', String(id));
     const rows = await loadSessions(id);
     const target = sessionId ?? rows.find((r) => !r.archived)?.id;
@@ -194,6 +224,7 @@ function Workspace() {
   // boot
   useEffect(() => {
     api<{ agents: Agent[]; projects: Project[]; activity: LiveActivity[] }>('/state').then((st) => {
+      known.current = st.projects;
       setAgents(st.agents); setProjects(st.projects); seed(st.activity);
       const [, p, s] = location.hash.match(/^#\/p\/(\d+)(?:\/s\/([\w-]+))?/) ?? [];
       const first = st.projects.find((x) => String(x.id) === (p ?? store.get('avity.project'))) ?? st.projects[0];
@@ -214,8 +245,6 @@ function Workspace() {
   }, [openProject, openSession, closeSession]);
 
   // live events, batched per animation frame
-  const queue = useRef(new Map<number, Item>());
-  const frame = useRef(0);
   /** A turn ended or failed, or an agent waits: a toast when the page is in view, else a system notification. */
   const announce = useCallback((ev: { sessionId: string; projectId: number; kind: 'done' | 'error' | 'waiting'; title: string | null; agent: string | null; text: string }) => {
     const shown = document.visibilityState === 'visible';
@@ -303,32 +332,53 @@ function Workspace() {
     el.scrollTop = items.length && stick.current ? el.scrollHeight : items.length ? el.scrollTop : 0;
   }, [items]);
 
+  // the mobile drawer closes like any sheet: Escape or a tap outside
+  useEffect(() => {
+    if (!side) return;
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setSide(false); };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [side]);
+
+  /** Puts text in the composer and hands it the caret, ready to edit or send. */
+  const compose = useCallback((t: string) => {
+    editDraft(t);
+    requestAnimationFrame(() => { const el = input.current; if (el && !el.disabled) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } });
+  }, [editDraft]);
+
   const S = () => sid.current!;
   const feedAct: FeedActions = useMemo(() => ({
-    permission: guard((permId: number, optionId: string) => api(`/sessions/${S()}/permission`, { permId, optionId })),
+    permission: async (permId: number, optionId: string) => {
+      try { await api(`/sessions/${S()}/permission`, { permId, optionId }); return true; } catch (e) { toast((e as Error).message, true); return false; }
+    },
     openSession: (id: string) => { openSession(id).catch((e) => toast(e.message, true)); },
     merge: guard(() => api(`/sessions/${S()}/merge`, {})),
-    useText: editDraft,
-    copy: copyText,
+    useText: compose,
+    copy: (text: string) => { copyText(text).then(() => toast('Copié dans le presse-papiers.'), (e) => toast(e.message, true)); },
     edit: async (itemId, text, fork) => {
       try {
         const r = await api<{ sessionId: string }>(`/sessions/${S()}/edit`, { itemId, text, fork });
-        stick.current = true;
+        stick.current = true; setAway(false);
         if (r.sessionId !== sid.current) { await openSession(r.sessionId); toast('Bifurcation créée : la conversation d\'origine reste intacte.'); }
         return true;
       } catch (e) { toast((e as Error).message, true); return false; }
     },
-    regenerate: guard(async (agent?: string) => { await api(`/sessions/${S()}/regenerate`, { agent }); stick.current = true; }),
+    regenerate: guard(async (agent?: string) => { await api(`/sessions/${S()}/regenerate`, { agent }); stick.current = true; setAway(false); }),
     fork: guard(async (before?: number) => {
       const s = await api<SessionRow>(`/sessions/${S()}/fork`, { before });
       await openSession(s.id);
       toast(before == null ? 'Session dupliquée.' : 'Bifurcation créée : la suite part d\'ici, l\'original reste intact.');
     }),
-  }), [openSession, editDraft]);
+  }), [openSession, compose]);
   const dockAct: DockActions = useMemo(() => ({
     send: async (text, agent, mode) => {
-      try { await api(`/sessions/${S()}/prompt`, { text, agent, mode: mode || undefined }); stick.current = true; return true; }
-      catch (e) { toast((e as Error).message, true); return false; }
+      try {
+        // A project without sessions is still ready to talk to: its first message opens one.
+        if (!sid.current && pid.current != null) await openSession((await api<SessionRow>(`/projects/${pid.current}/sessions`, {})).id);
+        await api(`/sessions/${S()}/prompt`, { text, agent, mode: mode || undefined });
+        stick.current = true; setAway(false);
+        return true;
+      } catch (e) { toast((e as Error).message, true); return false; }
     },
     stop: guard(() => api(`/sessions/${S()}/cancel`, {})),
     execute: guard((agent: string) => api(`/sessions/${S()}/execute`, { agent })),
@@ -342,7 +392,7 @@ function Workspace() {
     merge: guard(() => api(`/sessions/${S()}/merge`, {})),
     autoApprove: guard((on: boolean) => api(`/sessions/${S()}/auto-approve`, { on }).then(setLive)),
     isolated: guard((on: boolean) => api(`/sessions/${S()}/isolated`, { on }).then(setLive)),
-  }), []);
+  }), [openSession]);
 
   const patch = async (b: { title?: string; pinned?: boolean; archived?: boolean }, id = S()) => {
     const row = await api<SessionRow & { project_id: number }>(`/sessions/${id}`, b, 'PATCH');
@@ -379,6 +429,7 @@ function Workspace() {
     const s = await api<SessionRow>(`/projects/${project.id}/sessions`, {});
     await loadSessions(project.id);
     await openSession(s.id);
+    requestAnimationFrame(() => input.current?.focus());
   });
 
   // Previous / next session, in the sidebar's order (pinned, recent, archived). Alt+↑ / Alt+↓ as in Slack.
@@ -405,17 +456,28 @@ function Workspace() {
   const title = row?.title ?? 'Nouvelle session';
   const configs = (live?.configOptions ?? []).filter((o) => o.type === 'select' && o.category !== 'mode');
   const flat = (opts: any[]): any[] => opts.flatMap((x) => (x.options ? flat(x.options) : [x]));
+  const configSelect = (o: (typeof configs)[number]) => (
+    <select className="select" value={o.currentValue} title={o.name} aria-label={o.name}
+      onChange={guard((e) => api(`/sessions/${S()}/config`, { configId: o.id, value: e.target.value }).then(setLive))}>
+      {flat(o.options).map((x) => <option key={x.value} value={x.value}>{x.name}</option>)}
+    </select>
+  );
 
   return (
     <div className="app">
       <Sidebar open={side} projects={projects} project={project} sessions={sessions} sessionId={session?.id ?? null} live={live} agents={agents} acts={acts}
         onProject={(id) => openProject(id).catch((e) => toast(e.message, true))} onNewSession={newSession}
         onSession={(id, itemId) => openSession(id, itemId).catch((e) => toast(e.message, true))}
-        onCreated={(p) => { setProjects((ps) => [...ps, p].sort((a, b) => a.name.localeCompare(b.name))); openProject(p.id); }} onClose={() => setSide(false)} />
+        onCreated={(p) => {
+          known.current = [...known.current, p].sort((a, b) => a.name.localeCompare(b.name));
+          setProjects(known.current);
+          openProject(p.id).catch((e) => toast(e.message, true));
+        }} onClose={() => setSide(false)} />
+      {side && <div className="side-scrim" onClick={() => setSide(false)} aria-hidden="true" />}
 
       <main className="main">
         <header className="head">
-          <button className="chip icon only-mobile" onClick={() => setSide(true)} aria-label="Menu"><Icon name="menu" size={16} /></button>
+          <button className="chip icon only-mobile" onClick={() => setSide(true)} aria-label="Menu" aria-expanded={side}><Icon name="menu" size={16} /></button>
           <div className="title">
             {session && renaming ? <TitleInput value={title} onClose={() => setRenaming(false)} onSave={guard((t: string) => patch({ title: t }, session.id))} />
               : <b className="ellipsis" onDoubleClick={() => session && setRenaming(true)}>{session ? title : project?.name ?? 'AvityOne'}</b>}
@@ -427,7 +489,7 @@ function Workspace() {
                     <Icon name="branch" size={11} />bifurcation
                   </button>
                 )}
-                {live?.agent ? <><AgentAvatar id={live.agent} size={16} paused />{agents.find((a) => a.id === live.agent)?.name}</> : <span>aucun agent encore</span>}
+                {live?.agent ? <><AgentAvatar id={live.agent} size={16} paused /><span className="ellipsis">{agents.find((a) => a.id === live.agent)?.name}</span></> : <span>aucun agent encore</span>}
                 {live?.mode === 'plan' && <span className="tag plan">plan</span>}
                 {live?.modeId && <span className="hide-mobile">· {live.modeId}</span>}
                 {live?.worktree && <span className="tag"><Icon name="tree" size={11} />worktree</span>}
@@ -435,19 +497,23 @@ function Workspace() {
               </div>
             )}
           </div>
-          <div className="row hide-mobile">
-            {configs.map((o) => (
-              <select key={o.id} className="select" value={o.currentValue} title={o.name} aria-label={o.name}
-                onChange={guard((e) => api(`/sessions/${S()}/config`, { configId: o.id, value: e.target.value }).then(setLive))}>
-                {flat(o.options).map((x) => <option key={x.value} value={x.value}>{x.name}</option>)}
-              </select>
-            ))}
-          </div>
+          {configs.length > 0 && <div className="row hide-mobile">{configs.map((o) => <span key={o.id}>{configSelect(o)}</span>)}</div>}
+          {configs.length > 0 && (
+            <span className="only-mobile">
+              <Popover down trigger={(toggle, open) => (
+                <button className={`chip icon ${open ? 'on' : ''}`} onClick={toggle} aria-haspopup="true" aria-expanded={open} aria-label="Réglages de l'agent" title="Réglages de l'agent">
+                  <Icon name="sliders" size={16} />
+                </button>
+              )}>
+                {() => <div className="menu-form">{configs.map((o) => <label key={o.id}><span>{o.name}</span>{configSelect(o)}</label>)}</div>}
+              </Popover>
+            </span>
+          )}
           <span className="row hide-mobile" style={{ gap: 2 }}>
             <button className="chip icon" onClick={() => step(-1)} disabled={at <= 0} aria-label="Session précédente" title="Session précédente (Alt+↑)"><Icon name="chevronUp" size={15} /></button>
             <button className="chip icon" onClick={() => step(1)} disabled={at < 0 ? !sessions.length : at >= sessions.length - 1} aria-label="Session suivante" title="Session suivante (Alt+↓)"><Icon name="chevron" size={15} /></button>
           </span>
-          {live?.worktree && <button className="chip" onClick={dockAct.merge} disabled={live.busy}><Icon name="merge" size={14} /><span className="hide-mobile">Merger</span></button>}
+          {live?.worktree && <button className="chip" onClick={dockAct.merge} disabled={live.busy} title="Merger le worktree"><Icon name="merge" size={14} /><span className="hide-mobile">Merger</span></button>}
           {row && <SessionMenu session={row} busy={!!live?.busy} act={sessionAct} />}
           <button className={`chip icon hide-mobile ${notif ? 'on' : ''}`} onClick={toggleNotify} aria-pressed={notif} aria-label="Notifications"
             title={notif ? 'Notifications activées' : 'Être prévenu quand un agent termine, échoue ou attend ta validation'}><Icon name="bell" size={16} /></button>
@@ -457,11 +523,17 @@ function Workspace() {
 
         {link === 'lost' && <div className="conn-banner" role="status"><Icon name="alert" size={14} />Connexion au serveur perdue, reconnexion…</div>}
 
-        <div className="feed" ref={feed} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140; }}>
-          <Feed items={items} live={live} project={project} agents={agents} act={feedAct} onSuggest={editDraft} />
+        <div className="feed-wrap">
+          <div className="feed" ref={feed} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140; setAway(!stick.current); }}>
+            <Feed items={items} live={live} project={project} agents={agents} act={feedAct} onSuggest={compose} />
+          </div>
+          {away && items.length > 0 && (
+            <button className="chip icon to-latest" aria-label="Aller au dernier message" title="Aller au dernier message"
+              onClick={() => feed.current?.scrollTo({ top: feed.current.scrollHeight, behavior: 'smooth' })}><Icon name="chevron" size={16} /></button>
+          )}
         </div>
 
-        <Dock live={live} agents={agents} hasSession={!!session} planReady={planReady} activity={busyInfo} draft={draft} setDraft={editDraft} act={dockAct} />
+        <Dock live={live} agents={agents} hasSession={!!session} ready={!!project} planReady={planReady} activity={busyInfo} draft={draft} setDraft={editDraft} inputRef={input} act={dockAct} />
       </main>
 
       {panel && project && <Panel project={project} sessionId={session?.id ?? null} draft={draft} onClose={() => { setPanel(false); store.set('avity.panel', '0'); }} />}

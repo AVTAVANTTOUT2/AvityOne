@@ -5,7 +5,7 @@ import { Icon } from './icons';
 import { Segmented, guard, toast } from './ui';
 
 type Tab = 'memory' | 'context';
-const KINDS = ['decision', 'convention', 'pitfall', 'fact', 'todo'];
+const KINDS: Record<string, string> = { decision: 'décision', convention: 'convention', pitfall: 'piège', fact: 'fait', todo: 'à faire' };
 
 export function Panel({ project, sessionId, draft, onClose }: { project: Project; sessionId: string | null; draft: string; onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('memory');
@@ -54,12 +54,12 @@ function MemoryTab({ project }: { project: Project }) {
         toast(r.added ? 'Mémorisé, partagé avec tous les agents.' : 'Déjà connu.');
         setText(''); load();
       })}>
-        <select className="select" value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Type">{KINDS.map((k) => <option key={k}>{k}</option>)}</select>
+        <select className="select" value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Type">{Object.entries(KINDS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}</select>
         <input className="input grow" style={{ height: 32 }} value={text} onChange={(e) => setText(e.target.value)} placeholder="Ajouter une connaissance durable…" />
       </form>
       {data.memory.map((m) => (
         <div key={m.id} className="mem">
-          <div className={`k k-${m.kind}`}>{m.kind}</div>
+          <div className={`k k-${m.kind}`}>{KINDS[m.kind] ?? m.kind}</div>
           {m.text}
           <button className="chip icon sm x" style={{ width: 24, height: 24 }} aria-label="Oublier" title="Oublier"
             onClick={guard(async () => { await api(`/memory/${m.id}`, {}, 'DELETE'); load(); })}><Icon name="trash" size={13} /></button>
