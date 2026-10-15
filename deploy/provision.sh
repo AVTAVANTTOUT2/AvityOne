@@ -3,7 +3,7 @@
 set -euo pipefail
 
 sudo apt-get update -qq
-sudo apt-get install -y -qq git curl ca-certificates tmux ripgrep jq >/dev/null
+sudo apt-get install -y -qq git curl ca-certificates tmux ripgrep jq poppler-utils unzip >/dev/null
 
 if ! command -v node >/dev/null || [[ "$(node -v)" != v24* ]]; then
   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - >/dev/null
