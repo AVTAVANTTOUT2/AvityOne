@@ -799,7 +799,8 @@ test('terminal: interactive stdin, output and workspace isolation', async () => 
   const root = gitRepo(), { id } = openTerminal(root);
   try {
     assert.throws(() => readTerminal(home, id), /inconnu/);
-    writeTerminal(root, id, 'read answer; printf "response:%s\\n" "$answer"\n');
+    writeTerminal(root, id, 'printf "input-ready\\n"; read answer; printf "response:%s\\n" "$answer"\n');
+    await waitFor(() => readTerminal(root, id).output.includes('input-ready'));
     writeTerminal(root, id, 'hello\n');
     await waitFor(() => readTerminal(root, id).output.includes('response:hello'));
   } finally { closeTerminal(root, id); }
