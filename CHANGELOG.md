@@ -29,6 +29,10 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 - Les petits boutons icône (« + » des projets et des sessions, « Oublier » de la mémoire) n'affichaient qu'un point :
   la marge de `.chip.sm` écrasait l'icône.
+- Sans WebGL (GPU désactivé ou en liste noire, navigateur verrouillé, VM), l'interface restait blanche dès l'écran de
+  connexion : le shader `img-fx` levait une erreur non rattrapée. La couverture statique le remplace désormais, et une
+  error boundary contient aussi les échecs tardifs du renderer. `metal-fx` n'est plus monté sans WebGL : son repli
+  laissait un contour « AvityOne » en haut à gauche de la page.
 
 ### Modifié
 

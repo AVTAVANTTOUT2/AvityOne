@@ -85,6 +85,9 @@ Les 7 bibliothèques de [libraries.dev](https://libraries.dev) (MIT) sont utilis
 
 Assets construits pour compléter, dans le même thème : jeu d'icônes, logo, couvertures procédurales (SVG rastérisé pour le shader), visionneuse de diff, styles markdown, menus et dialogues.
 
+Sans WebGL, l'interface reste entièrement utilisable. Les couvertures `img-fx` s'affichent en image statique et les
+éléments `metal-fx` en version simple. Les autres effets dessinent en canvas 2D et ne changent pas.
+
 ## Configuration
 
 `~/.avityone/config.json` (créé au premier lancement avec un token aléatoire) surcharge les valeurs par défaut de
