@@ -1,5 +1,5 @@
 // Shared primitives: markdown, diff, liquid segmented control, liquid plus-menu, popover, toasts.
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Component, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { Liquid } from 'liquid-gooey';
@@ -147,14 +147,36 @@ export const guard = <A extends unknown[]>(fn: (...a: A) => Promise<unknown> | u
   try { await fn(...a); } catch (e) { toast((e as Error).message, true); }
 };
 
+let webgl: boolean | null = null;
+/** Whether this browser can create a WebGL context (GPU disabled or blocklisted, locked-down browsers… can't). */
+export function hasWebGL(): boolean {
+  if (webgl !== null) return webgl;
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2') ?? document.createElement('canvas').getContext('webgl');
+    webgl = !!gl;
+    gl?.getExtension('WEBGL_lose_context')?.loseContext(); // browsers cap live contexts: give the probe's back
+  } catch { webgl = false; }
+  return webgl;
+}
+
+/** Shows `fallback` instead of a decorative effect that crashed, so the effect can never take the whole UI down. */
+export class FxBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(e: unknown) { console.warn('effet visuel désactivé :', e); }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
 /**
  * metal-fx keeps its host invisible until the first WebGL frame lands. If that never happens (context lost,
- * GPU blocklisted…), fall back to the plain element so a primary control can never vanish.
+ * GPU blocklisted…), fall back to the plain element so a primary control can never vanish. Without WebGL at all,
+ * metal-fx isn't mounted: its own fallback leaves MetalText's rim canvas stranded in the page's top-left corner.
  */
 export function MetalSafe({ children, fallback }: { children: ReactNode; fallback: ReactNode }) {
   const wrap = useRef<HTMLSpanElement>(null);
-  const [ok, setOk] = useState(true);
+  const [ok, setOk] = useState(hasWebGL);
   useEffect(() => {
+    if (!ok) return;
     let tries = 0;
     const i = setInterval(() => {
       if (document.hidden) return;

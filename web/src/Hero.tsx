@@ -1,12 +1,24 @@
 // img-fx hero (three.js), lazy-loaded so the shader only ships when a hero is on screen.
 import { useEffect, useRef, useState } from 'react';
 import { ImageGeneration, type ImageGenerationHandle } from 'img-fx';
-import { coverJpeg } from './brand';
+import { coverJpeg, coverUrl } from './brand';
 import { Icon } from './icons';
+import { FxBoundary, hasWebGL } from './ui';
 
-export default function Hero({ seed, preset = 'pixels-organic', auto = false, count = 3 }: {
-  seed: string; preset?: 'pixels-organic' | 'pixels-mechanic' | 'sweep-gradient'; auto?: boolean; count?: number;
-}) {
+type Props = { seed: string; preset?: 'pixels-organic' | 'pixels-mechanic' | 'sweep-gradient'; auto?: boolean; count?: number };
+
+/** img-fx needs WebGL and throws without it: the static cover takes its place, and the rest of the UI is unaffected. */
+export default function Hero(props: Props) {
+  const cover = <Cover seed={props.seed} />;
+  return hasWebGL() ? <FxBoundary fallback={cover}><Shader {...props} /></FxBoundary> : cover;
+}
+
+/** The same procedural cover the shader reveals, as a plain image. */
+function Cover({ seed }: { seed: string }) {
+  return <img src={coverUrl(`${seed}#0`, 768)} alt="" style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover', borderRadius: 18 }} />;
+}
+
+function Shader({ seed, preset = 'pixels-organic', auto = false, count = 3 }: Props) {
   const ref = useRef<ImageGenerationHandle>(null);
   const [imgs, setImgs] = useState<string[]>([]);
   useEffect(() => {
