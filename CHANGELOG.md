@@ -18,6 +18,9 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   `avity export <session>`.
 - **Brouillons par session**, enregistrés sur le serveur : chaque session garde le sien, d'un appareil à l'autre et
   après rechargement.
+- Interface ([#5](https://github.com/AVTAVANTTOUT2/AvityOne/pull/5)) : bouton « aller au dernier message », copie
+  des blocs de code, réglages modèle/effort accessibles sur mobile, premier message possible dans un projet sans
+  session (il en ouvre une).
 - CLI : `avity search <projet> <texte>` et `avity export <session>`.
 - API : `PATCH` et `DELETE /api/sessions/:id`, `PUT /api/sessions/:id/draft`, `GET /api/sessions/:id/export`,
   `GET /api/projects/:id/search?q=`.
@@ -30,9 +33,15 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 - Les petits boutons icône (« + » des projets et des sessions, « Oublier » de la mémoire) n'affichaient qu'un point :
   la marge de `.chip.sm` écrasait l'icône.
 - Sans WebGL (GPU désactivé ou en liste noire, navigateur verrouillé, VM), l'interface restait blanche dès l'écran de
-  connexion : le shader `img-fx` levait une erreur non rattrapée. La couverture statique le remplace désormais, et une
-  error boundary contient aussi les échecs tardifs du renderer. `metal-fx` n'est plus monté sans WebGL : son repli
-  laissait un contour « AvityOne » en haut à gauche de la page.
+  connexion : le shader `img-fx` levait une erreur non rattrapée. La couverture statique le remplace désormais, aussi
+  en rendu WebGL logiciel (SwiftShader, llvmpipe), où les shaders figeaient la page. Une error boundary contient les
+  échecs tardifs du renderer. `metal-fx` n'est plus monté sans WebGL matériel : son repli laissait un contour
+  « AvityOne » en haut à gauche de la page ([#5](https://github.com/AVTAVANTTOUT2/AvityOne/pull/5),
+  [#7](https://github.com/AVTAVANTTOUT2/AvityOne/pull/7)).
+- Interface ([#5](https://github.com/AVTAVANTTOUT2/AvityOne/pull/5)) : menu de choix de l'agent rogné par le
+  composer, chemin de projet mal affiché, chronomètre aberrant au premier tour, outils restés « en cours » après un
+  arrêt, double envoi des autorisations, ouvertures de session concurrentes. Sur mobile : menu latéral refermable,
+  zoom iOS sur les champs, zone de l'indicateur d'accueil (safe area), débordements horizontaux.
 
 ### Modifié
 

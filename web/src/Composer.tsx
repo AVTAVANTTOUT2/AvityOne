@@ -1,5 +1,5 @@
 // Dock: live status pill, plan-ready bar and the composer (voice glow, liquid controls, liquid-metal send).
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { VoiceBeam, useMicrophone, type VoiceBeamMotion } from 'voice-glow';
 import { MetalFx, useMetalBend } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
@@ -74,26 +74,32 @@ function useDictation(append: (t: string) => void) {
 function useElapsed(busy: boolean) {
   const [start, setStart] = useState(0);
   const [, tick] = useState(0);
+  // Adjusted during render, not in an effect: the first busy frame already reads 0:00 instead of time since 1970.
+  if (busy && !start) setStart(Date.now());
+  if (!busy && start) setStart(0);
   useEffect(() => {
     if (!busy) return;
-    setStart(Date.now());
     const i = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(i);
   }, [busy]);
-  const s = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  const s = start ? Math.max(0, Math.floor((Date.now() - start) / 1000)) : 0;
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-export function Dock({ live, agents, hasSession, planReady, activity, draft, setDraft, act }: {
-  live: LiveState | null; agents: Agent[]; hasSession: boolean; planReady: boolean;
-  activity: { orb: OrbState; label: string } | null; draft: string; setDraft: (t: string) => void; act: DockActions;
+// Touch screens: focusing the composer on its own would pop the keyboard over the answer being read.
+const finePointer = () => matchMedia('(pointer: fine)').matches;
+
+export function Dock({ live, agents, hasSession, ready, planReady, activity, draft, setDraft, inputRef, act }: {
+  live: LiveState | null; agents: Agent[]; hasSession: boolean; ready: boolean; planReady: boolean;
+  activity: { orb: OrbState; label: string } | null; draft: string; setDraft: (t: string) => void;
+  inputRef: RefObject<HTMLTextAreaElement | null>; act: DockActions;
 }) {
   const [agent, setAgent] = useState('auto');
   const [mode, setMode] = useState<Mode>('');
   const [execAgent, setExecAgent] = useState<string | null>(null);
   const busy = !!live?.busy;
   const installed = agents.filter((a) => a.installed);
-  const area = useRef<HTMLTextAreaElement>(null);
+  const area = inputRef;
   const sendRef = useRef<HTMLButtonElement>(null);
   const agentRef = useRef<HTMLButtonElement>(null);
   const micRef = useRef<HTMLButtonElement>(null);
@@ -108,12 +114,12 @@ export function Dock({ live, agents, hasSession, planReady, activity, draft, set
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
-  }, [draft]);
-  useEffect(() => { if (!busy && hasSession) area.current?.focus(); }, [busy, hasSession]);
+  }, [draft, area]);
+  useEffect(() => { if (!busy && ready && finePointer()) area.current?.focus(); }, [busy, ready, area]);
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || busy || !hasSession) return;
+    if (!text || busy || !ready) return;
     if (dictation.live) dictation.stop();
     if (await act.send(text, agent, mode)) setDraft('');
   };
@@ -167,8 +173,8 @@ export function Dock({ live, agents, hasSession, planReady, activity, draft, set
           theme="dark"
         >
           <div className="composer">
-            <textarea ref={area} rows={1} value={draft} disabled={!hasSession} aria-label="Message"
-              placeholder={hasSession ? 'Demande quelque chose… (@agent pour forcer, /plan pour planifier)' : 'Choisis ou crée une session'}
+            <textarea ref={area} rows={1} value={draft} disabled={!ready} aria-label="Message" enterKeyHint="send"
+              placeholder={!ready ? 'Choisis ou crée un projet' : hasSession ? 'Demande quelque chose… (@agent pour forcer, /plan pour planifier)' : 'Demande quelque chose : une session s\'ouvre à l\'envoi'}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
@@ -205,13 +211,13 @@ export function Dock({ live, agents, hasSession, planReady, activity, draft, set
                     </>
                   )}
                 </Popover>
-                <Segmented label="Mode" value={mode} options={MODES} onChange={setMode} />
+                <div className="seg-wrap"><Segmented label="Mode" value={mode} options={MODES} onChange={setMode} /></div>
               </div>
-              <button ref={micRef} className={`chip icon mic ${dictation.live ? 'live' : ''}`} onClick={toggleMic} disabled={!hasSession}
-                title={dictation.live ? 'Arrêter la dictée' : 'Dicter'} aria-pressed={dictation.live}><Icon name="mic" size={16} /></button>
+              <button ref={micRef} className={`chip icon mic ${dictation.live ? 'live' : ''}`} onClick={toggleMic} disabled={!ready}
+                title={dictation.live ? 'Arrêter la dictée' : 'Dicter'} aria-label="Dictée vocale" aria-pressed={dictation.live}><Icon name="mic" size={16} /></button>
               {(() => {
                 const btn = (
-                  <button ref={sendRef} className="send" onClick={busy ? act.stop : send} disabled={!hasSession || (!busy && !draft.trim())}
+                  <button ref={sendRef} className="send" onClick={busy ? act.stop : send} disabled={!ready || (!busy && !draft.trim())}
                     aria-label={busy ? 'Arrêter' : 'Envoyer'} title={busy ? 'Arrêter (Échap)' : 'Envoyer (Entrée)'}>
                     <Icon name={busy ? 'stop' : 'send'} size={17} strokeWidth={2.2} />
                   </button>
