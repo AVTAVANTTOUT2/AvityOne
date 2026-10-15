@@ -99,21 +99,33 @@ export class Hub {
   }
 
   state(L: Live) {
-    return { busy: L.busy, agent: L.agent, mode: L.mode, autoApprove: L.autoApprove, connected: !!L.a, isolated: L.isolated, worktree: L.worktree,
+    return { busy: L.busy, waiting: L.pending.size > 0, agent: L.agent, mode: L.mode, autoApprove: L.autoApprove, connected: !!L.a, isolated: L.isolated, worktree: L.worktree,
       modeId: L.a?.modeId ?? null, modes: L.a?.modes ?? [], configOptions: L.a?.configOptions ?? [] };
   }
-  private emitState(L: Live) { this.emit({ type: 'state', sessionId: L.id, state: this.state(L) }); }
+  private emitState(L: Live) { this.emit({ type: 'state', sessionId: L.id, projectId: L.projectId, state: this.state(L) }); }
+
+  /** What the user wants to hear about even from another session, tab or device: a turn ended or failed, an agent waits. */
+  private notify(L: Live, kind: 'done' | 'error' | 'waiting', text: string, agent = L.agent) {
+    const title = one('SELECT title FROM sessions WHERE id = ?', L.id)?.title ?? null;
+    this.emit({ type: 'activity', sessionId: L.id, projectId: L.projectId, kind, title, agent, text: String(text ?? '').slice(0, 280) });
+  }
+
+  /** Live sessions working or waiting for the user, in every project: seeds the UI's activity view. */
+  activityList() {
+    return [...this.live.values()].filter((L) => L.busy || L.pending.size)
+      .map((L) => ({ sessionId: L.id, projectId: L.projectId, busy: L.busy, waiting: L.pending.size > 0 }));
+  }
 
   private addItem(L: Live, item: Row): Row {
     item.id = Number(run('INSERT INTO items (session_id, data) VALUES (?, ?)', L.id, JSON.stringify(item)).lastInsertRowid);
     L.last = item;
-    this.emit({ type: 'item', sessionId: L.id, item });
+    this.emit({ type: 'item', sessionId: L.id, projectId: L.projectId, item });
     return item;
   }
   private saveItem(L: Live, item: Row) {
     const { id, ...data } = item;
     run('UPDATE items SET data = ? WHERE id = ?', JSON.stringify(data), id);
-    this.emit({ type: 'item', sessionId: L.id, item });
+    this.emit({ type: 'item', sessionId: L.id, projectId: L.projectId, item });
   }
 
   snapshot(id: string) {
@@ -137,7 +149,7 @@ export class Hub {
     } else mkdirSync(path, { recursive: true });
     const id = Number(run('INSERT INTO projects (name, path) VALUES (?, ?)', name, path).lastInsertRowid);
     const p = this.project(id);
-    return { ...p, chunks: indexProject(p) };
+    return { ...p, ...indexProject(p) };
   }
 
   createSession(projectId: number, title?: string, o: { isolated?: boolean; parentId?: string } = {}) {
@@ -150,10 +162,11 @@ export class Hub {
     return one('SELECT * FROM sessions WHERE id = ?', id)!;
   }
 
-  /** Pinned first, archived last (the UI folds them), most recent first within each group. */
+  /** Pinned first, archived last (the UI folds them), most recent first within each group. With live activity. */
   listSessions(projectId: number) {
-    return all(`SELECT id, title, agent, mode, turns, summary, parent_id, pinned, archived, updated_at FROM sessions
-      WHERE project_id = ? ORDER BY archived, pinned DESC, updated_at DESC LIMIT 300`, projectId);
+    return all(`SELECT id, title, agent, mode, turns, summary, parent_id, forked_from, pinned, archived, updated_at FROM sessions
+      WHERE project_id = ? ORDER BY archived, pinned DESC, updated_at DESC LIMIT 300`, projectId)
+      .map((r): Row => { const L = this.live.get(r.id); return { ...r, busy: !!L?.busy, waiting: !!L?.pending.size }; });
   }
 
   /** Rename, pin, archive. Leaves `updated_at` alone so the list doesn't reshuffle under the user. */
@@ -190,6 +203,40 @@ export class Hub {
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     this.emit({ type: 'sessions', projectId: s.project_id });
     return { deleted: targets.length };
+  }
+
+  /**
+   * Copies a conversation into a new session: all of it, or only the items before `before` (a fork at that message).
+   * The copy starts a fresh agent session with the copied transcript as hand-off. Worktree files are not copied.
+   */
+  fork(id: string, o: { before?: number } = {}) {
+    const L = this.get(id);
+    if (L.busy) throw httpError(409, 'session occupée : attends la fin du tour pour la dupliquer');
+    const before = o.before ?? null;
+    if (before !== null && !Number.isInteger(before)) throw httpError(400, 'message invalide');
+    const s = one('SELECT * FROM sessions WHERE id = ?', id)!;
+    const items: Row[] = all('SELECT data FROM items WHERE session_id = ? AND (? IS NULL OR id < ?) ORDER BY id', id, before, before).map((r) => {
+      const it = JSON.parse(r.data);
+      // The copy carries no live controls: pending prompts and running reviews belong to the source.
+      if (it.type === 'permission' && !it.resolved) it.resolved = 'annulé';
+      if (it.type === 'review' && it.status === 'running') it.status = 'error';
+      if (it.type === 'parallel') return { type: 'info', text: `🔀 Exécution parallèle, restée dans la session d'origine :\n${it.children.map((c: Row) => `- ${c.task} → ${c.agent} (${c.status})`).join('\n')}` };
+      return it;
+    });
+    if (s.worktree) items.push({ type: 'info', text: '🌿 Copie d\'une session en worktree : la conversation suit, pas les fichiers du worktree (merge-le pour les retrouver).' });
+    const nid = randomUUID();
+    const turns = items.filter((it) => it.type === 'end').length;
+    const title = s.title ? `${s.title} (${before === null ? 'copie' : 'bifurcation'})`.slice(0, 120) : null;
+    const lastAsk = items.findLast((it) => it.type === 'user'); // the copy continues with whoever answered last in it
+    db.exec('BEGIN');
+    try {
+      run(`INSERT INTO sessions (id, project_id, title, agent, mode, isolated, renamed, forked_from, turns, summarized_turns)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, nid, s.project_id, title, lastAsk?.agent ?? null, lastAsk?.mode ?? 'agent', s.isolated ?? 0, s.renamed ?? 0, id, turns, turns);
+      for (const it of items) run('INSERT INTO items (session_id, data) VALUES (?, ?)', nid, JSON.stringify(it));
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    this.emit({ type: 'sessions', projectId: s.project_id });
+    return one('SELECT * FROM sessions WHERE id = ?', nid)!;
   }
 
   // ---------- agent connections ----------
@@ -292,20 +339,25 @@ export class Hub {
     const item = this.addItem(L, { type: 'permission', title: tc.title ?? known?.title ?? 'Action', kind,
       text: clip(contentText(tc), 20_000), options: opts.map((o) => ({ id: o.optionId, name: o.name, kind: o.kind })) });
     this.syncChild(L, 'waiting');
-    return new Promise((resolve) => L.pending.set(item.id, (optionId) => {
+    const answer = new Promise<Json>((resolve) => L.pending.set(item.id, (optionId) => {
       L.pending.delete(item.id);
       this.syncChild(L, 'running');
       const opt = opts.find((o) => o.optionId === optionId);
       item.resolved = opt?.name ?? 'annulé';
       this.saveItem(L, item);
-      if (kind === 'switch_mode' && opt?.kind.startsWith('allow')) { L.mode = 'agent'; run('UPDATE sessions SET mode = ? WHERE id = ?', 'agent', L.id); this.emitState(L); }
+      if (kind === 'switch_mode' && opt?.kind.startsWith('allow')) { L.mode = 'agent'; run('UPDATE sessions SET mode = ? WHERE id = ?', 'agent', L.id); }
+      this.emitState(L);
       resolve({ outcome: opt ? { outcome: 'selected', optionId: opt.optionId } : { outcome: 'cancelled' } });
     }));
+    this.emitState(L);
+    this.notify(L, 'waiting', item.title);
+    return answer;
   }
 
   // ---------- user actions ----------
 
-  prompt(sessionId: string, text: string, forced: Forced = {}) {
+  /** `extra` is merged into the user item (`edited`, `regenerated`). */
+  prompt(sessionId: string, text: string, forced: Forced = {}, extra: Row = {}) {
     const L = this.get(sessionId);
     if (L.busy) throw httpError(409, 'session occupée : attends la fin du tour ou arrête-le');
     if (!text.trim()) throw httpError(400, 'message vide');
@@ -313,7 +365,7 @@ export class Hub {
     const prior = one('SELECT turns FROM sessions WHERE id = ?', L.id)!.turns > 0 ? transcript(L.id, 10_000) : '';
     L.busy = true; L.plan = null; L.tools.clear();
     this.emitState(L);
-    this.addItem(L, { type: 'user', text: r.prompt, agent: r.agent, mode: r.mode, reason: r.reason });
+    const ask = this.addItem(L, { type: 'user', text: r.prompt, agent: r.agent, mode: r.mode, reason: r.reason, ...extra });
     this.syncChild(L, 'running');
     (async () => {
       try {
@@ -331,19 +383,24 @@ export class Hub {
           blocks.push({ type: 'text', text: pack.text });
           L.fresh = false;
           this.addItem(L, { type: 'info', text: `Contexte injecté → ${config.agents[r.agent].name} : ${pack.stats}` });
+          if (pack.warnings.length) this.addItem(L, { type: 'info', level: 'warn', text: `⚠️ Contexte partiel : ${pack.warnings.join(' ; ')}` });
         }
         blocks.push({ type: 'text', text: r.mode === 'plan' ? PLAN_PREFIX + r.prompt : r.prompt });
         run(`UPDATE sessions SET agent = ?, mode = ?, title = COALESCE(title, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, r.agent, r.mode, r.prompt.slice(0, 60), L.id);
         this.emit({ type: 'sessions', projectId: L.projectId });
         const res = await a.conn.request('session/prompt', { sessionId: a.acpId, prompt: blocks });
-        this.addItem(L, { type: 'end', stopReason: res?.stopReason ?? 'end_turn', agent: r.agent });
+        const stop = res?.stopReason ?? 'end_turn';
+        this.addItem(L, { type: 'end', stopReason: stop, agent: r.agent });
         this.syncChild(L, 'done');
+        const answer = one(`SELECT json_extract(data, '$.text') AS t FROM items WHERE session_id = ? AND id > ? AND json_extract(data, '$.type') = 'assistant' ORDER BY id DESC LIMIT 1`, L.id, ask.id)?.t;
+        this.notify(L, 'done', stop === 'end_turn' ? answer ?? '' : `Tour interrompu (${stop})`);
         run('UPDATE sessions SET turns = turns + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?', L.id);
         const s = one('SELECT turns, summarized_turns FROM sessions WHERE id = ?', L.id)!;
         if (s.turns - s.summarized_turns >= config.summarizeEvery) this.summarizeBg(L.id);
       } catch (e: any) {
         this.addItem(L, { type: 'error', text: String(e.message ?? e) });
         this.syncChild(L, 'error');
+        this.notify(L, 'error', String(e.message ?? e));
       } finally {
         L.busy = false;
         this.emitState(L);
@@ -357,6 +414,68 @@ export class Hub {
     if (L.a) L.a.conn.notify('session/cancel', { sessionId: L.a.acpId });
     this.cancelPending(L);
     return { ok: true };
+  }
+
+  /**
+   * Cuts the conversation at user message `itemId`, removed with everything after it. The agent restarts on the next
+   * turn with what remains as hand-off. Files the agent already changed stay as they are.
+   */
+  private rewind(L: Live, itemId: number): Row {
+    if (L.busy) throw httpError(409, 'session occupée : attends la fin du tour ou arrête-le');
+    const r = one('SELECT id, data FROM items WHERE id = ? AND session_id = ?', itemId, L.id);
+    const it = r && JSON.parse(r.data);
+    if (it?.type !== 'user') throw httpError(404, 'message introuvable');
+    const cut = all('SELECT data FROM items WHERE session_id = ? AND id >= ?', L.id, r!.id).map((x) => JSON.parse(x.data));
+    if (cut.some((x) => x.type === 'parallel')) throw httpError(409, 'une exécution parallèle suit ce message : bifurque la session plutôt');
+    if (cut.some((x) => x.type === 'review' && x.status === 'running')) throw httpError(409, 'revue croisée en cours : attends sa fin');
+    this.drop(L);
+    L.last = null; L.plan = null; L.tools.clear();
+    db.exec('BEGIN');
+    try {
+      run('DELETE FROM items WHERE session_id = ? AND id >= ?', L.id, r!.id);
+      const turns = one(`SELECT count(*) AS n FROM items WHERE session_id = ? AND json_extract(data, '$.type') = 'end'`, L.id)!.n;
+      run('UPDATE sessions SET acp_session_id = NULL, turns = ?, summarized_turns = MIN(summarized_turns, ?) WHERE id = ?', turns, turns, L.id);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    this.emit({ type: 'reset', sessionId: L.id, projectId: L.projectId, fromId: r!.id });
+    this.emitState(L);
+    return { ...it, id: r!.id };
+  }
+
+  /**
+   * Sends again with the original message's agent (if still installed) and mode, unless `agent` or a mention in the
+   * new text picks another. Returns the routing and the user item's extra fields.
+   */
+  private resend(it: Row, text: string, agent?: string): [Forced, Row] {
+    if (agent && agent !== 'auto') {
+      if (!availableAgents().includes(agent)) throw httpError(409, `agent "${agent}" non installé`);
+      return [{ agent, mode: it.mode }, {}];
+    }
+    if (/(?:^|\s)@\w+/.test(text) || !availableAgents().includes(it.agent)) return [{ mode: it.mode }, {}];
+    return [{ agent: it.agent, mode: it.mode }, { reason: 'même agent' }];
+  }
+
+  /** Edits user message `itemId` and sends it again: in place (what followed is replaced) or in a fork of the session. */
+  edit(sessionId: string, itemId: number, text: string, o: { fork?: boolean } = {}) {
+    if (!text.trim()) throw httpError(400, 'message vide');
+    const L = this.get(sessionId);
+    const r = one('SELECT data FROM items WHERE id = ? AND session_id = ?', itemId, L.id);
+    const it = r && JSON.parse(r.data);
+    if (it?.type !== 'user') throw httpError(404, 'message introuvable');
+    const [forced, extra] = this.resend(it, text); // checked before the cut, which can't be undone
+    const target = o.fork ? (this.fork(L.id, { before: itemId }).id as string) : (this.rewind(L, itemId), L.id);
+    return { sessionId: target, ...this.prompt(target, text, forced, { ...extra, edited: true }) };
+  }
+
+  /** Replaces the last answer: the last user message is sent again, to the same agent or to `agent`. */
+  regenerate(sessionId: string, agent?: string) {
+    const L = this.get(sessionId);
+    const r = one(`SELECT id, data FROM items WHERE session_id = ? AND json_extract(data, '$.type') = 'user' ORDER BY id DESC LIMIT 1`, L.id);
+    if (!r) throw httpError(400, 'rien à régénérer');
+    const prev = JSON.parse(r.data);
+    const [forced, extra] = this.resend(prev, prev.text, agent);
+    this.rewind(L, r.id);
+    return this.prompt(L.id, prev.text, forced, { ...extra, regenerated: true });
   }
 
   respondPermission(sessionId: string, permId: number, optionId: string | null) {
@@ -479,7 +598,11 @@ ${diff}
 \`\`\``, { mcpServers: mcpServersFor(p.id), onText: (t) => { item.text = t; this.saveItem(L, item); } })
       .then((t) => { item.text = t; item.status = 'done'; })
       .catch((e) => { item.status = 'error'; item.text += `\n\n⚠️ ${e.message}`; })
-      .finally(() => this.saveItem(L, item));
+      .finally(() => {
+        this.saveItem(L, item);
+        const name = config.agents[who]?.name ?? who;
+        this.notify(L, item.status === 'done' ? 'done' : 'error', item.status === 'done' ? `Revue croisée par ${name} terminée.` : `La revue croisée par ${name} a échoué.`, who);
+      });
     return item;
   }
 
@@ -489,7 +612,14 @@ ${diff}
       const L = this.get(sessionId);
       this.addItem(L, { type: 'info', text: `🧠 Session résumée${r.added ? `, ${r.added} connaissance(s) ajoutée(s) à la mémoire du projet` : ''}.` });
       this.emit({ type: 'sessions', projectId: L.projectId });
-    }).catch((e) => console.error(`[summarize ${sessionId}]`, e.message));
+    }).catch((e) => {
+      console.error(`[summarize ${sessionId}]`, e.message);
+      // Memory silently not being fed is worth knowing: say it in the session, once in a row.
+      if (!one('SELECT 1 FROM sessions WHERE id = ?', sessionId)) return; // deleted meanwhile
+      const text = `⚠️ Mémoire non mise à jour : le résumé automatique a échoué (${String(e.message ?? e).slice(0, 300)}).`;
+      const last = one('SELECT data FROM items WHERE session_id = ? ORDER BY id DESC LIMIT 1', sessionId);
+      if (!last || JSON.parse(last.data).text !== text) this.addItem(this.get(sessionId), { type: 'info', level: 'warn', text });
+    });
   }
 
   shutdown() { for (const L of this.live.values()) this.drop(L); }

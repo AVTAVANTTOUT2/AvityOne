@@ -174,17 +174,30 @@ export function Popover({ trigger, children, down }: { trigger: (toggle: () => v
   );
 }
 
-export const toast = (msg: string, bad = false) => window.dispatchEvent(new CustomEvent('avity:toast', { detail: { msg, bad } }));
+export type ToastAction = { label: string; onClick: () => void };
+type Toast = { msg: string; bad: boolean; action?: ToastAction };
+
+export const toast = (msg: string, bad = false, action?: ToastAction) => window.dispatchEvent(new CustomEvent('avity:toast', { detail: { msg, bad, action } }));
 
 export function Toaster() {
-  const [t, setT] = useState<{ msg: string; bad: boolean } | null>(null);
+  const [t, setT] = useState<Toast | null>(null);
   useEffect(() => {
     let timer = 0;
-    const on = (e: Event) => { setT((e as CustomEvent).detail); clearTimeout(timer); timer = window.setTimeout(() => setT(null), 4200); };
+    const on = (e: Event) => {
+      const next: Toast = (e as CustomEvent).detail;
+      setT(next);
+      clearTimeout(timer);
+      timer = window.setTimeout(() => setT(null), next.action ? 7000 : 4200);
+    };
     window.addEventListener('avity:toast', on);
     return () => window.removeEventListener('avity:toast', on);
   }, []);
-  return t ? <div className={`toast ${t.bad ? 'bad' : ''}`} role="status">{t.msg}</div> : null;
+  return t ? (
+    <div className={`toast ${t.bad ? 'bad' : ''}`} role="status">
+      {t.msg}
+      {t.action && <button className="toast-act" onClick={() => { setT(null); t.action!.onClick(); }}>{t.action.label}</button>}
+    </div>
+  ) : null;
 }
 
 /** Wraps an async action so failures surface as a toast instead of an unhandled rejection. */

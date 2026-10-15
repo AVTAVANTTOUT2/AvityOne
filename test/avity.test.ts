@@ -1,7 +1,7 @@
 // End-to-end checks against a scripted ACP agent: routing, context injection, permissions, plan mode, MCP memory.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
@@ -25,7 +25,8 @@ writeFileSync(join(home, 'config.json'), JSON.stringify({
 const { route } = await import('../src/router.ts');
 const { ftsQuery, addMemory, searchMemory, searchHistory, run, one } = await import('../src/store.ts');
 const { hub, planTasks } = await import('../src/hub.ts');
-const { exportMarkdown, summarize } = await import('../src/context.ts');
+const { exportMarkdown, summarize, buildPack } = await import('../src/context.ts');
+const { config } = await import('../src/config.ts');
 const avail = ['fake', 'fake2'];
 
 test('router: mention, /plan, rules, continuity', () => {
@@ -221,6 +222,160 @@ test('sessions: rename, pin, archive, draft, history search, export, delete', as
   assert.throws(() => hub.snapshot(a.id), /session inconnue/);
   assert.equal(one('SELECT count(*) AS n FROM items WHERE session_id IN (?, ?)', a.id, kid.id)!.n, 0);
   assert.equal(searchHistory(p.id, 'fonctionnalite').length, 0, 'search index cleaned up');
+});
+
+test('fork: whole or at a message, live controls dropped, the copy resumes with the transcript', async () => {
+  const p = await hub.createProject({ name: 'fork' });
+  const s = hub.createSession(p.id);
+  hub.prompt(s.id, 'premier sujet');
+  await waitIdle(s.id);
+  hub.prompt(s.id, 'second sujet');
+  await waitIdle(s.id);
+  hub.prompt(s.id, '@fake2 passe la main');
+  await waitIdle(s.id);
+  hub.updateSession(s.id, { title: 'Source' });
+  const items = hub.snapshot(s.id).items;
+  const second = items.filter((i: any) => i.type === 'user')[1];
+
+  const dup = hub.fork(s.id);
+  assert.equal(dup.title, 'Source (copie)');
+  assert.equal(dup.forked_from, s.id);
+  assert.equal(dup.acp_session_id, null);
+  assert.equal(dup.turns, 3);
+  assert.equal(dup.agent, 'fake2', 'the copy goes on with whoever answered last');
+  assert.deepEqual(hub.snapshot(dup.id).items.map((i: any) => i.text ?? i.type), items.map((i: any) => i.text ?? i.type));
+
+  const br = hub.fork(s.id, { before: second.id });
+  assert.equal(br.title, 'Source (bifurcation)');
+  assert.equal(br.turns, 1);
+  assert.equal(br.agent, 'fake', 'a fork goes on with the agent of its own last turn');
+  assert.deepEqual(hub.snapshot(br.id).items.filter((i: any) => i.type === 'user').map((i: any) => i.text), ['premier sujet']);
+  hub.prompt(br.id, 'autre suite');
+  const snap = await waitIdle(br.id);
+  assert.match(snap.items.filter((i: any) => i.type === 'info').at(-1).text, /reprise/, 'fresh agent, copied transcript handed off');
+  assert.equal(snap.items.filter((i: any) => i.type === 'assistant').at(-1).text, 'mode=default ctx=true');
+  assert.equal(hub.snapshot(s.id).items.length, items.length, 'source untouched');
+
+  const raw = hub.createSession(p.id);
+  const add = (it: object) => run('INSERT INTO items (session_id, data) VALUES (?, ?)', raw.id, JSON.stringify(it));
+  add({ type: 'permission', title: 'Edit', options: [{ id: 'yes', name: 'Allow', kind: 'allow_once' }] });
+  add({ type: 'review', agent: 'fake', status: 'running', text: '' });
+  add({ type: 'parallel', children: [{ id: 'x', task: 'tâche', agent: 'fake', status: 'running' }] });
+  const copy = hub.snapshot(hub.fork(raw.id).id).items;
+  assert.equal(copy[0].resolved, 'annulé');
+  assert.equal(copy[1].status, 'error');
+  assert.equal(copy[2].type, 'info');
+  assert.match(copy[2].text, /tâche → fake/);
+});
+
+test('edit and regenerate: the conversation is cut at the message, the agent restarts with what remains', async () => {
+  const p = await hub.createProject({ name: 'edit' });
+  const s = hub.createSession(p.id);
+  const resets: any[] = [];
+  const spy = (ev: any) => { if (ev.type === 'reset' && ev.sessionId === s.id) resets.push(ev); };
+  hub.listeners.add(spy);
+  hub.prompt(s.id, 'premier message');
+  await waitIdle(s.id);
+  hub.prompt(s.id, 'message zygomatique');
+  await waitIdle(s.id);
+  const [first, second] = hub.snapshot(s.id).items.filter((i: any) => i.type === 'user');
+  const texts = (snap: any) => snap.items.filter((i: any) => i.type === 'user').map((i: any) => i.text);
+
+  assert.equal(hub.edit(s.id, second.id, 'message corrigé').sessionId, s.id);
+  let snap = await waitIdle(s.id);
+  assert.deepEqual(texts(snap), ['premier message', 'message corrigé']);
+  assert.deepEqual([snap.items.at(-6).edited, snap.items.at(-6).reason], [true, 'même agent']);
+  assert.deepEqual(resets.map((e) => e.fromId), [second.id]);
+  assert.match(snap.items.filter((i: any) => i.type === 'info').at(-1).text, /reprise/, 'restarted with the first turn handed off');
+  assert.equal(searchHistory(p.id, 'zygomatique').length, 0, 'search index follows the cut');
+  assert.equal(snap.session!.turns, 2);
+
+  const n = snap.items.length;
+  hub.regenerate(s.id, 'fake2');
+  snap = await waitIdle(s.id);
+  assert.equal(snap.items.length, n, 'last turn replaced, not appended');
+  const last = snap.items.filter((i: any) => i.type === 'user').at(-1);
+  assert.deepEqual([last.text, last.agent, last.regenerated], ['message corrigé', 'fake2', true]);
+
+  hub.edit(s.id, last.id, '@fake ramène le premier agent');
+  snap = await waitIdle(s.id);
+  assert.equal(snap.items.filter((i: any) => i.type === 'user').at(-1).agent, 'fake', 'a mention in the new text wins');
+
+  hub.edit(s.id, first.id, 'tout recommencer');
+  snap = await waitIdle(s.id);
+  assert.deepEqual(texts(snap), ['tout recommencer']);
+  assert.doesNotMatch(snap.items.find((i: any) => i.type === 'info').text, /reprise/, 'nothing left to hand off');
+  assert.equal(snap.session!.turns, 1);
+
+  const f = hub.edit(s.id, snap.items[0].id, 'variante', { fork: true });
+  assert.notEqual(f.sessionId, s.id);
+  assert.deepEqual(texts(await waitIdle(f.sessionId)), ['variante']);
+  assert.deepEqual(texts(hub.snapshot(s.id)), ['tout recommencer'], 'the original stays as it was');
+
+  hub.prompt(s.id, 'encore');
+  assert.throws(() => hub.regenerate(s.id), /occupée/);
+  await waitIdle(s.id);
+  run('INSERT INTO items (session_id, data) VALUES (?, ?)', s.id, JSON.stringify({ type: 'parallel', children: [] }));
+  assert.throws(() => hub.regenerate(s.id), /parallèle/);
+  assert.throws(() => hub.edit(s.id, snap.items[1].id, 'x'), /introuvable/, 'only user messages can be edited');
+  hub.listeners.delete(spy);
+});
+
+test('activity: waiting, done and error events, live state in session lists', async () => {
+  const p = await hub.createProject({ name: 'act' });
+  const s = hub.createSession(p.id);
+  hub.updateSession(s.id, { title: 'Suivie' });
+  const evs: any[] = [];
+  const spy = (ev: any) => { if (ev.type === 'activity' && ev.sessionId === s.id) evs.push(ev); };
+  hub.listeners.add(spy);
+  const mine = () => hub.activityList().filter((a) => a.sessionId === s.id);
+
+  hub.prompt(s.id, 'refonte', { mode: 'plan' }); // in plan mode the edit waits for the user
+  const perm = await waitFor(() => hub.snapshot(s.id).items.find((i: any) => i.type === 'permission'));
+  assert.equal(hub.snapshot(s.id).state.waiting, true);
+  assert.deepEqual(hub.listSessions(p.id).map((r) => [r.busy, r.waiting]), [[true, true]]);
+  assert.deepEqual(mine(), [{ sessionId: s.id, projectId: p.id, busy: true, waiting: true }]);
+  hub.respondPermission(s.id, perm.id, 'yes');
+  await waitIdle(s.id);
+  assert.equal(hub.snapshot(s.id).state.waiting, false);
+  assert.deepEqual(mine(), []);
+
+  hub.prompt(s.id, 'crash');
+  await waitIdle(s.id);
+  assert.deepEqual(evs.map((e) => e.kind), ['waiting', 'done', 'error']);
+  assert.equal(evs[0].text, 'Edit a.txt');
+  assert.deepEqual([evs[1].text, evs[1].title, evs[1].projectId, evs[1].agent], ['mode=plan ctx=true', 'Suivie', p.id, 'fake']);
+  assert.match(evs[2].text, /arrêté/);
+  hub.listeners.delete(spy);
+});
+
+test('context: unreadable docs, brief and summaries are reported instead of failing or vanishing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'avity-docs-'));
+  writeFileSync(join(dir, 'README.md'), '# Lisible\nLe projet zébu.');
+  mkdirSync(join(dir, 'piège.md')); // named like a doc, can't be read as one
+  const p = await hub.createProject({ name: 'docs', path: dir });
+  assert.deepEqual([p.chunks, p.failed], [1, ['piège.md']], 'the readable docs are indexed, the project is created');
+
+  assert.match(buildPack({ ...p, path: join(dir, 'absent') }, 'x', 'zébu').warnings.join(), /dossier de travail introuvable/);
+  assert.deepEqual(buildPack(p, 'x', 'zébu').warnings, []);
+  mkdirSync(join(dir, '.avity', 'brief.md'), { recursive: true });
+  const s = hub.createSession(p.id);
+  hub.prompt(s.id, 'zébu');
+  const snap = await waitIdle(s.id);
+  const warn = snap.items.find((i: any) => i.level === 'warn');
+  assert.match(warn.text, /^⚠️ Contexte partiel : brief illisible/);
+  assert.equal(snap.items.filter((i: any) => i.type === 'assistant').at(-1).text, 'mode=default ctx=true', 'the agent still gets the rest');
+
+  const saved = config.summarizer;
+  config.summarizer = { agent: 'absent', model: '' };
+  const memoryWarnings = () => hub.snapshot(s.id).items.filter((i: any) => i.text?.startsWith('⚠️ Mémoire non mise à jour')).length;
+  try {
+    hub.summarizeBg(s.id);
+    await waitFor(() => memoryWarnings());
+    hub.summarizeBg(s.id);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(memoryWarnings(), 1, 'said once in a row');
+  } finally { config.summarizer = saved; }
 });
 
 test('mcp: memory tools over stdio', async () => {

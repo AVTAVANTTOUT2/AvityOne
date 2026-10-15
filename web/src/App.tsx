@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { MetalFx, MetalText } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
-import { api, subscribe, type Agent, type Item, type LiveState, type Project, type SessionRow, type Snapshot } from './api';
+import { api, subscribe, type Act, type Agent, type Item, type Link, type LiveActivity, type LiveState, type Project, type SessionRow, type Snapshot } from './api';
 import { AgentAvatar, Cover, LogoMark } from './brand';
 import { Icon } from './icons';
 import { Sidebar } from './Sidebar';
@@ -10,7 +10,8 @@ import { Feed, activity, type FeedActions } from './Feed';
 import { Dock, type DockActions } from './Composer';
 import { Panel } from './Panel';
 import { SessionMenu, TitleInput, type SessionActions } from './SessionMenu';
-import { Boundary, MetalSafe, Popover, Toaster, guard, toast } from './ui';
+import { Boundary, MetalSafe, Popover, Toaster, copyText, guard, toast } from './ui';
+import { canNotify, notifyOn, setNotify, systemNotify } from './notify';
 
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -94,6 +95,12 @@ function Workspace() {
   const [renaming, setRenaming] = useState(false);
   const [side, setSide] = useState(false);
   const [panel, setPanel] = useState(() => store.get('avity.panel') === '1' && innerWidth > 1100);
+  const [acts, setActs] = useState<Record<string, Act>>({});
+  const [link, setLink] = useState<Link>('ok');
+  const [notif, setNotif] = useState(notifyOn);
+  const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
+  const agentsRef = useRef<Agent[]>([]);
+  agentsRef.current = agents;
   const [away, setAway] = useState(false); // scrolled up, away from the latest output
   const sid = useRef<string | null>(null);
   const pid = useRef<number | null>(null);
@@ -105,6 +112,7 @@ function Workspace() {
   const queue = useRef(new Map<number, Item>());
   const frame = useRef(0);
   const focusItem = useRef<number | null>(null);
+  const fromHistory = useRef(false); // browser back/forward: follow the URL without stacking a new entry
 
   // Drafts belong to their session and live on the server (they follow you from phone to desktop). Saves are
   // debounced and always go to the session the text was typed in, even if you switch sessions meanwhile.
@@ -127,15 +135,45 @@ function Workspace() {
     saveTimer.current = window.setTimeout(flushDraft, 600);
   }, [flushDraft]);
   useEffect(() => {
-    const hidden = () => { if (document.visibilityState === 'hidden') flushDraft(); };
-    document.addEventListener('visibilitychange', hidden);
+    const vis = () => {
+      const shown = document.visibilityState === 'visible';
+      setVisible(shown);
+      if (!shown) flushDraft();
+      else if (sid.current) markSeen(sid.current); // what finished while the tab was hidden is now in view
+    };
+    document.addEventListener('visibilitychange', vis);
     window.addEventListener('pagehide', flushDraft);
-    return () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', flushDraft); };
+    return () => { document.removeEventListener('visibilitychange', vis); window.removeEventListener('pagehide', flushDraft); };
   }, [flushDraft]);
+
+  // Activity of every session, open or not: live state from `state` events, plus finished turns not seen yet.
+  const track = useCallback((id: string, projectId: number, patch: Partial<Act>) => setActs((a) => ({ ...a, [id]: { ...a[id], projectId, ...patch } })), []);
+  const markSeen = (id: string) => setActs((a) => (a[id]?.unread ? { ...a, [id]: { ...a[id], unread: undefined } } : a));
+  const seed = useCallback((list: LiveActivity[]) => setActs((a) => {
+    const now = new Map(list.map((x) => [x.sessionId, x]));
+    const next: Record<string, Act> = {};
+    for (const [id, v] of Object.entries(a)) {
+      const x = now.get(id);
+      // Was working, isn't any more: it finished while we weren't listening.
+      const missed = v.busy && !x?.busy && id !== sid.current;
+      next[id] = { ...v, busy: !!x?.busy, waiting: !!x?.waiting, unread: missed ? v.unread ?? 'done' : v.unread };
+    }
+    for (const x of list) next[x.sessionId] ??= { projectId: x.projectId, busy: x.busy, waiting: x.waiting };
+    return next;
+  }), []);
 
   const loadSessions = useCallback(async (projectId: number) => {
     const rows = await api<SessionRow[]>(`/projects/${projectId}/sessions`);
     if (pid.current === projectId) setSessions(rows);
+    setActs((a) => {
+      const next: Record<string, Act> = {};
+      // Deleted sessions (and their sub-sessions) drop out, so an unseen result can't linger in the tab title.
+      for (const [id, v] of Object.entries(a)) if (v.projectId !== projectId) next[id] = v;
+      // Rows only seed what live `state` events haven't told us yet: a list fetched while a turn ran can land after
+      // its end and would otherwise leave the session « busy ».
+      for (const r of rows) next[r.id] = a[r.id] ? { ...a[r.id], projectId } : { projectId, busy: !!r.busy, waiting: !!r.waiting };
+      return next;
+    });
     return rows;
   }, []);
 
@@ -145,27 +183,32 @@ function Workspace() {
     const n = ++opening.current;
     const snap = await api<Snapshot>(`/sessions/${id}`);
     if (n !== opening.current) return; // a later click won the race
+    const prev = sid.current;
     // Reopening the same session (stream reconnect) keeps what is being typed. So does opening one from no session
     // (« + » or a project's first message): the composer is live meanwhile, and that text is for this session.
-    if (id !== sid.current) {
-      const fromNone = sid.current === null;
+    if (id !== prev) {
+      const fromNone = prev === null;
       setDraft((typed) => snap.session.draft ?? (fromNone ? typed : ''));
       setRenaming(false);
     }
     sid.current = id;
+    markSeen(id);
     queue.current.clear();
     setSession(snap.session); setLive(snap.state); setItems(snap.items);
     focusItem.current = itemId ?? null;
     stick.current = itemId == null; setAway(itemId != null);
-    history.replaceState(null, '', `#/p/${snap.session.project_id}/s/${id}`);
+    // Each session switch is a history entry: back/forward (and Android's back button) walk the visited sessions.
+    const url = `#/p/${snap.session.project_id}/s/${id}`;
+    if (location.hash !== url) history[prev && prev !== id && !fromHistory.current ? 'pushState' : 'replaceState'](null, '', url);
     setSide(false);
   }, [flushDraft]);
 
   const closeSession = useCallback((projectId: number) => {
     flushDraft();
+    const had = sid.current;
     opening.current++; // an open still in flight must not land after this
     sid.current = null; setSession(null); setLive(null); setItems([]); setDraft('');
-    history.replaceState(null, '', `#/p/${projectId}`);
+    history[had && !fromHistory.current ? 'pushState' : 'replaceState'](null, '', `#/p/${projectId}`);
   }, [flushDraft]);
 
   const openProject = useCallback(async (id: number, sessionId?: string) => {
@@ -180,20 +223,64 @@ function Workspace() {
 
   // boot
   useEffect(() => {
-    api<{ agents: Agent[]; projects: Project[] }>('/state').then((st) => {
+    api<{ agents: Agent[]; projects: Project[]; activity: LiveActivity[] }>('/state').then((st) => {
       known.current = st.projects;
-      setAgents(st.agents); setProjects(st.projects);
+      setAgents(st.agents); setProjects(st.projects); seed(st.activity);
       const [, p, s] = location.hash.match(/^#\/p\/(\d+)(?:\/s\/([\w-]+))?/) ?? [];
       const first = st.projects.find((x) => String(x.id) === (p ?? store.get('avity.project'))) ?? st.projects[0];
       if (first) openProject(first.id, s).catch(() => openProject(first.id));
     }).catch((e) => toast(e.message, true));
-  }, [openProject]);
+  }, [openProject, seed]);
+
+  useEffect(() => {
+    const pop = () => {
+      const [, p, s] = location.hash.match(/^#\/p\/(\d+)(?:\/s\/([\w-]+))?/) ?? [];
+      if (!p) return;
+      fromHistory.current = true;
+      const go = Number(p) !== pid.current ? openProject(Number(p), s) : s ? openSession(s) : Promise.resolve(closeSession(Number(p)));
+      go.catch((e) => toast(e.message, true)).finally(() => { fromHistory.current = false; });
+    };
+    window.addEventListener('popstate', pop);
+    return () => window.removeEventListener('popstate', pop);
+  }, [openProject, openSession, closeSession]);
 
   // live events, batched per animation frame
+  /** A turn ended or failed, or an agent waits: a toast when the page is in view, else a system notification. */
+  const announce = useCallback((ev: { sessionId: string; projectId: number; kind: 'done' | 'error' | 'waiting'; title: string | null; agent: string | null; text: string }) => {
+    const shown = document.visibilityState === 'visible';
+    if (ev.sessionId === sid.current && shown) return; // already in front of the user
+    if (ev.kind !== 'waiting') track(ev.sessionId, ev.projectId, { unread: ev.kind }); // waiting shows from live state
+    const who = agentsRef.current.find((a) => a.id === ev.agent)?.name ?? 'L\'agent';
+    const head = { done: `${who} a terminé`, error: 'Échec', waiting: `${who} attend ta validation` }[ev.kind];
+    const title = `${head} · « ${ev.title ?? 'Nouvelle session'} »`;
+    const open = () => {
+      window.focus();
+      (ev.projectId === pid.current ? openSession(ev.sessionId) : openProject(ev.projectId, ev.sessionId)).catch((e) => toast(e.message, true));
+    };
+    if (shown) toast(title, ev.kind === 'error', { label: 'Ouvrir', onClick: open });
+    else systemNotify(title, ev.text, ev.sessionId, open);
+  }, [track, openSession, openProject]);
+
+  const resync = useCallback(async () => {
+    try {
+      seed((await api<{ activity: LiveActivity[] }>('/state')).activity);
+      if (pid.current) await loadSessions(pid.current);
+      if (sid.current) await openSession(sid.current);
+    } catch { /* the next reconnect tries again */ }
+  }, [seed, loadSessions, openSession]);
+
   useEffect(() => subscribe((ev) => {
     if (ev.type === 'sessions') { if (ev.projectId === pid.current) loadSessions(ev.projectId); return; }
+    if (ev.type === 'state') track(ev.sessionId, ev.projectId, { busy: ev.state.busy, waiting: !!ev.state.waiting });
+    if (ev.type === 'activity') { announce(ev); return; }
     if (ev.sessionId !== sid.current) return;
     if (ev.type === 'state') { setLive(ev.state); return; }
+    if (ev.type === 'reset') {
+      // The conversation was cut at `fromId` (edit, regenerate): drop those items, including any still queued.
+      for (const id of queue.current.keys()) if (id >= ev.fromId) queue.current.delete(id);
+      setItems((prev) => prev.filter((it) => it.id < ev.fromId));
+      return;
+    }
     if (ev.type !== 'item') return;
     queue.current.set(ev.item.id, ev.item);
     frame.current ||= requestAnimationFrame(() => {
@@ -210,7 +297,25 @@ function Workspace() {
         return next;
       });
     });
-  }, () => { if (sid.current) openSession(sid.current); }), [loadSessions, openSession]);
+  }, {
+    status: (s) => { setLink(s); if (s === 'ok') toast('Reconnecté au serveur.'); },
+    reconnect: resync,
+  }), [loadSessions, track, announce, resync]);
+
+  // Tab title: how many sessions wait for you or finished unseen, e.g. « (2) AvityOne ».
+  const pending = Object.entries(acts).filter(([id, a]) => (a.waiting || a.unread) && !(id === session?.id && visible)).length;
+  useEffect(() => { document.title = pending ? `(${pending}) AvityOne` : 'AvityOne'; }, [pending]);
+
+  const toggleNotify = guard(async () => {
+    if (!canNotify()) {
+      toast('Notifications système indisponibles ici : il faut HTTPS (ou localhost). Les alertes restent dans la page et le titre de l\'onglet.', true);
+      return;
+    }
+    const on = await setNotify(!notif);
+    setNotif(on);
+    toast(on ? 'Notifications activées : fin, échec ou validation requise, quand l\'onglet est en arrière-plan.'
+      : Notification.permission === 'denied' ? 'Notifications bloquées par le navigateur pour ce site.' : 'Notifications désactivées.', !on && Notification.permission === 'denied');
+  });
 
   useLayoutEffect(() => {
     const el = feed.current;
@@ -249,6 +354,21 @@ function Workspace() {
     openSession: (id: string) => { openSession(id).catch((e) => toast(e.message, true)); },
     merge: guard(() => api(`/sessions/${S()}/merge`, {})),
     useText: compose,
+    copy: (text: string) => { copyText(text).then(() => toast('Copié dans le presse-papiers.'), (e) => toast(e.message, true)); },
+    edit: async (itemId, text, fork) => {
+      try {
+        const r = await api<{ sessionId: string }>(`/sessions/${S()}/edit`, { itemId, text, fork });
+        stick.current = true; setAway(false);
+        if (r.sessionId !== sid.current) { await openSession(r.sessionId); toast('Bifurcation créée : la conversation d\'origine reste intacte.'); }
+        return true;
+      } catch (e) { toast((e as Error).message, true); return false; }
+    },
+    regenerate: guard(async (agent?: string) => { await api(`/sessions/${S()}/regenerate`, { agent }); stick.current = true; setAway(false); }),
+    fork: guard(async (before?: number) => {
+      const s = await api<SessionRow>(`/sessions/${S()}/fork`, { before });
+      await openSession(s.id);
+      toast(before == null ? 'Session dupliquée.' : 'Bifurcation créée : la suite part d\'ici, l\'original reste intact.');
+    }),
   }), [openSession, compose]);
   const dockAct: DockActions = useMemo(() => ({
     send: async (text, agent, mode) => {
@@ -282,6 +402,7 @@ function Workspace() {
   const sessionAct: SessionActions = {
     rename: () => setRenaming(true),
     pin: guard((on: boolean) => patch({ pinned: on })),
+    duplicate: () => feedAct.fork(),
     archive: guard(async (on: boolean) => { await patch({ archived: on }); toast(on ? 'Session archivée : retrouve-la en bas de la liste.' : 'Session désarchivée.'); }),
     exportMd: guard(async () => {
       const { filename, markdown } = await api<{ filename: string; markdown: string }>(`/sessions/${S()}/export`);
@@ -311,6 +432,23 @@ function Workspace() {
     requestAnimationFrame(() => input.current?.focus());
   });
 
+  // Previous / next session, in the sidebar's order (pinned, recent, archived). Alt+↑ / Alt+↓ as in Slack.
+  const at = sessions.findIndex((s) => s.id === session?.id);
+  const step = useCallback((d: -1 | 1) => {
+    const i = sessions.findIndex((s) => s.id === sid.current);
+    const next = sessions[i < 0 ? 0 : i + d];
+    if (next) openSession(next.id).catch((e) => toast(e.message, true));
+  }, [sessions, openSession]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+      e.preventDefault();
+      step(e.key === 'ArrowUp' ? -1 : 1);
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [step]);
+
   const busyInfo = activity(items, live);
   const last = items.at(-1);
   const planReady = !!session && !!live && !live.busy && live.mode === 'plan' && last?.type === 'end';
@@ -327,7 +465,7 @@ function Workspace() {
 
   return (
     <div className="app">
-      <Sidebar open={side} projects={projects} project={project} sessions={sessions} sessionId={session?.id ?? null} live={live} agents={agents}
+      <Sidebar open={side} projects={projects} project={project} sessions={sessions} sessionId={session?.id ?? null} live={live} agents={agents} acts={acts}
         onProject={(id) => openProject(id).catch((e) => toast(e.message, true))} onNewSession={newSession}
         onSession={(id, itemId) => openSession(id, itemId).catch((e) => toast(e.message, true))}
         onCreated={(p) => {
@@ -346,6 +484,11 @@ function Workspace() {
             {session && (
               <div className="meta">
                 {!!row?.archived && <span className="tag"><Icon name="archive" size={11} />archivée</span>}
+                {row?.forked_from && (
+                  <button className="tag link" onClick={() => openSession(row.forked_from!).catch((e) => toast(e.message, true))} title="Ouvrir la session d'origine">
+                    <Icon name="branch" size={11} />bifurcation
+                  </button>
+                )}
                 {live?.agent ? <><AgentAvatar id={live.agent} size={16} paused /><span className="ellipsis">{agents.find((a) => a.id === live.agent)?.name}</span></> : <span>aucun agent encore</span>}
                 {live?.mode === 'plan' && <span className="tag plan">plan</span>}
                 {live?.modeId && <span className="hide-mobile">· {live.modeId}</span>}
@@ -366,11 +509,19 @@ function Workspace() {
               </Popover>
             </span>
           )}
+          <span className="row hide-mobile" style={{ gap: 2 }}>
+            <button className="chip icon" onClick={() => step(-1)} disabled={at <= 0} aria-label="Session précédente" title="Session précédente (Alt+↑)"><Icon name="chevronUp" size={15} /></button>
+            <button className="chip icon" onClick={() => step(1)} disabled={at < 0 ? !sessions.length : at >= sessions.length - 1} aria-label="Session suivante" title="Session suivante (Alt+↓)"><Icon name="chevron" size={15} /></button>
+          </span>
           {live?.worktree && <button className="chip" onClick={dockAct.merge} disabled={live.busy} title="Merger le worktree"><Icon name="merge" size={14} /><span className="hide-mobile">Merger</span></button>}
           {row && <SessionMenu session={row} busy={!!live?.busy} act={sessionAct} />}
+          <button className={`chip icon hide-mobile ${notif ? 'on' : ''}`} onClick={toggleNotify} aria-pressed={notif} aria-label="Notifications"
+            title={notif ? 'Notifications activées' : 'Être prévenu quand un agent termine, échoue ou attend ta validation'}><Icon name="bell" size={16} /></button>
           <button className={`chip icon ${panel ? 'on' : ''}`} title="Mémoire & contexte" aria-label="Mémoire et contexte" aria-pressed={panel}
             onClick={() => { setPanel(!panel); store.set('avity.panel', panel ? '0' : '1'); }}><Icon name="panel" size={16} /></button>
         </header>
+
+        {link === 'lost' && <div className="conn-banner" role="status"><Icon name="alert" size={14} />Connexion au serveur perdue, reconnexion…</div>}
 
         <div className="feed-wrap">
           <div className="feed" ref={feed} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140; setAway(!stick.current); }}>

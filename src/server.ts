@@ -36,10 +36,11 @@ const routes: [string, RegExp, Handler][] = [
     return {
       agents: Object.entries(config.agents).map(([id, a]) => ({ id, name: a.name, strengths: a.strengths, installed: avail.includes(id) })),
       projects: all('SELECT * FROM projects ORDER BY name'),
+      activity: hub.activityList(),
     };
   }],
   ['POST', /^\/api\/projects$/, (_, b) => hub.createProject(b)],
-  ['POST', /^\/api\/projects\/(\d+)\/reindex$/, (m) => ({ chunks: indexProject(project(m[1])) })],
+  ['POST', /^\/api\/projects\/(\d+)\/reindex$/, (m) => indexProject(project(m[1]))],
   ['GET', /^\/api\/projects\/(\d+)\/sessions$/, (m) => hub.listSessions(Number(m[1]))],
   ['GET', /^\/api\/projects\/(\d+)\/search$/, (m, _, u) => searchHistory(Number(m[1]), u.searchParams.get('q') ?? '')],
   ['POST', /^\/api\/projects\/(\d+)\/sessions$/, (m, b) => hub.createSession(Number(m[1]), b.title, { isolated: !!b.isolated })],
@@ -64,6 +65,9 @@ const routes: [string, RegExp, Handler][] = [
   }],
   ['POST', new RegExp(`^/api/sessions/${S}/prompt$`), (m, b) => hub.prompt(m[1], String(b.text ?? ''), { agent: b.agent, mode: b.mode })],
   ['POST', new RegExp(`^/api/sessions/${S}/cancel$`), (m) => hub.cancel(m[1])],
+  ['POST', new RegExp(`^/api/sessions/${S}/fork$`), (m, b) => hub.fork(m[1], { before: b.before == null ? undefined : Number(b.before) })],
+  ['POST', new RegExp(`^/api/sessions/${S}/edit$`), (m, b) => hub.edit(m[1], Number(b.itemId), String(b.text ?? ''), { fork: !!b.fork })],
+  ['POST', new RegExp(`^/api/sessions/${S}/regenerate$`), (m, b) => hub.regenerate(m[1], b.agent)],
   ['POST', new RegExp(`^/api/sessions/${S}/permission$`), (m, b) => hub.respondPermission(m[1], b.permId, b.optionId ?? null)],
   ['POST', new RegExp(`^/api/sessions/${S}/config$`), (m, b) => hub.setConfig(m[1], String(b.configId), b.value)],
   ['POST', new RegExp(`^/api/sessions/${S}/auto-approve$`), (m, b) => hub.setAutoApprove(m[1], !!b.on)],
@@ -79,7 +83,8 @@ function sse(req: IncomingMessage, res: ServerResponse) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
   res.write(': ok\n\n');
   const send = (ev: any) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  const beat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  // A named event, unlike an SSE comment, reaches the page: it tells a silently dead connection from a quiet one.
+  const beat = setInterval(() => res.write('event: ping\ndata: {}\n\n'), 25_000);
   hub.listeners.add(send);
   req.on('close', () => { clearInterval(beat); hub.listeners.delete(send); });
 }
