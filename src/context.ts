@@ -117,6 +117,30 @@ export function transcript(sessionId: string, max = 12_000): string {
   return lines.length > max ? lines.slice(0, max * 0.25) + '\n…\n' + lines.slice(-max * 0.75) : lines;
 }
 
+/** Full session as a Markdown document (thoughts left out), with a file name for downloads. */
+export function exportMarkdown(sessionId: string): { filename: string; markdown: string } {
+  const s = one('SELECT s.*, p.name AS project FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ?', sessionId);
+  if (!s) throw Object.assign(new Error('session inconnue'), { status: 404 });
+  const name = (id?: string) => (id && config.agents[id]?.name) || id || 'agent';
+  const quote = (t: string) => t.split('\n').map((l) => `> ${l}`).join('\n');
+  const title = s.title ?? 'Session sans titre';
+  const out = [`# ${title}`, '', `- Projet : ${s.project}`, `- Session : \`${s.id}\``, `- Créée le ${s.created_at} UTC, mise à jour le ${s.updated_at} UTC`];
+  if (s.summary) out.push('', quote(`**Résumé** : ${s.summary}`));
+  for (const r of all('SELECT data FROM items WHERE session_id = ? ORDER BY id', sessionId)) {
+    const it = JSON.parse(r.data);
+    if (it.type === 'user') out.push('', '---', '', `### Toi → ${name(it.agent)}${it.mode === 'plan' ? ' (plan)' : ''}`, '', it.text);
+    else if (it.type === 'assistant') out.push('', `### ${name(it.agent)}`, '', it.text);
+    else if (it.type === 'tool') out.push('', `- 🔧 ${it.title}${it.status && it.status !== 'completed' ? ` (${it.status})` : ''}${it.paths?.length ? ` — ${it.paths.join(', ')}` : ''}`);
+    else if (it.type === 'plan') out.push('', '**Plan**', '', ...it.entries.map((e: Row) => `- [${e.status === 'completed' ? 'x' : ' '}] ${e.content}`));
+    else if (it.type === 'review') out.push('', `### Revue croisée par ${name(it.agent)}`, '', it.text);
+    else if (it.type === 'parallel') out.push('', '**Exécution parallèle**', '', ...it.children.map((c: Row) => `- ${c.task} → ${name(c.agent)} (${c.status})`));
+    else if (it.type === 'permission') out.push('', quote(`🔐 ${it.title}${it.resolved ? ` → ${it.resolved}` : ''}`));
+    else if (it.type === 'info' || it.type === 'error') out.push('', quote(`${it.type === 'error' ? '⚠️ ' : ''}${it.text}`));
+  }
+  const slug = title.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'session';
+  return { filename: `${slug}-${String(s.updated_at).slice(0, 10)}.md`, markdown: out.join('\n') + '\n' };
+}
+
 const summarizing = new Set<string>();
 
 /** Summarizes a session and extracts durable memories with a cheap model. Safe to call concurrently. */
@@ -142,7 +166,8 @@ ${t}
     const kinds = ['decision', 'convention', 'pitfall', 'fact', 'todo'];
     let added = 0;
     for (const m of parsed.memories ?? []) if (typeof m?.text === 'string' && addMemory(s.project_id, kinds.includes(m.kind) ? m.kind : 'fact', m.text, sessionId)) added++;
-    run(`UPDATE sessions SET summary = ?, title = COALESCE(?, title), summarized_turns = ? WHERE id = ?`, String(parsed.summary ?? '').slice(0, 2000), parsed.title ?? null, s.turns, sessionId);
+    run(`UPDATE sessions SET summary = ?, title = CASE WHEN renamed = 1 THEN title ELSE COALESCE(?, title) END, summarized_turns = ? WHERE id = ?`,
+      String(parsed.summary ?? '').slice(0, 2000), parsed.title ?? null, s.turns, sessionId);
     return { summary: parsed.summary, title: parsed.title, added };
   } finally { summarizing.delete(sessionId); }
 }

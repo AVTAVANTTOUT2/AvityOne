@@ -34,18 +34,65 @@ export const run = (sql: string, ...p: any[]) => db.prepare(sql).run(...p);
 
 // Columns added after v0.1, created in place so existing databases keep working.
 const cols = all('PRAGMA table_info(sessions)').map((c) => c.name);
-for (const [c, def] of [['parent_id', 'TEXT'], ['isolated', 'INTEGER DEFAULT 0'], ['worktree', 'TEXT']]) {
+for (const [c, def] of [['parent_id', 'TEXT'], ['isolated', 'INTEGER DEFAULT 0'], ['worktree', 'TEXT'],
+  ['pinned', 'INTEGER DEFAULT 0'], ['archived', 'INTEGER DEFAULT 0'], ['renamed', 'INTEGER DEFAULT 0'], ['draft', 'TEXT']]) {
   if (!cols.includes(c)) db.exec(`ALTER TABLE sessions ADD COLUMN ${c} ${def}`);
 }
+
+// Conversation history search: messages, answers and reviews, kept in sync with `items` by triggers
+// (streamed answers are rewritten in place, so updates re-index too).
+const searchable = (data: string) => `json_extract(${data}, '$.type') IN ('user', 'assistant', 'review')`;
+// One transaction: the backfill can't be skipped by a crash, nor run twice by the MCP process opening the same database.
+db.exec('BEGIN IMMEDIATE');
+try {
+  const fresh = !one(`SELECT 1 FROM sqlite_master WHERE name = 'history'`);
+  db.exec(`
+CREATE VIRTUAL TABLE IF NOT EXISTS history USING fts5(
+  text, session_id UNINDEXED, tokenize = 'unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON items WHEN ${searchable('new.data')} BEGIN
+  INSERT INTO history (rowid, text, session_id) VALUES (new.id, json_extract(new.data, '$.text'), new.session_id); END;
+CREATE TRIGGER IF NOT EXISTS history_au AFTER UPDATE ON items WHEN ${searchable('new.data')} BEGIN
+  DELETE FROM history WHERE rowid = old.id;
+  INSERT INTO history (rowid, text, session_id) VALUES (new.id, json_extract(new.data, '$.text'), new.session_id); END;
+CREATE TRIGGER IF NOT EXISTS history_ad AFTER DELETE ON items BEGIN
+  DELETE FROM history WHERE rowid = old.id; END;
+`);
+  if (fresh) db.exec(`INSERT INTO history (rowid, text, session_id) SELECT id, json_extract(data, '$.text'), session_id FROM items WHERE ${searchable('data')}`);
+  db.exec('COMMIT');
+} catch (e) { db.exec('ROLLBACK'); throw e; }
 
 const STOP = new Set(('les des une est pour avec dans que qui sur pas plus par mais ont sont aux ces cette tout tous fait faire peux veux '
   + 'comment quoi quel quelle nous vous ils elles mon mes ton tes son ses leur leurs etre avoir the and for with this that from are '
   + 'you your can how what why have has was will not but all any use using into').split(' '));
 
+/** Meaningful words of free text: accents folded, stop words dropped, deduplicated. */
+const words = (text: string) => {
+  const w = text.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').match(/[\p{L}\p{N}_]{3,}/gu) ?? [];
+  return [...new Set(w)].filter((x) => !STOP.has(x)).slice(0, 24);
+};
+
 /** Turns free text into an FTS5 OR-query of its meaningful words (quoted, so user text can't inject FTS syntax). */
 export function ftsQuery(text: string): string {
-  const words = text.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').match(/[\p{L}\p{N}_]{3,}/gu) ?? [];
-  return [...new Set(words)].filter((w) => !STOP.has(w)).slice(0, 24).map((w) => `"${w}"`).join(' OR ');
+  return words(text).map((w) => `"${w}"`).join(' OR ');
+}
+
+const MARK = ['\u0002', '\u0003']; // highlight delimiters in search snippets: plain text, never HTML
+
+/** Searches a project's conversations: every word must match, the last one as a prefix (search as you type). */
+export function searchHistory(projectId: number, text: string, limit = 30) {
+  const w = words(text);
+  if (!w.length) return [];
+  const hits = all(`SELECT h.rowid AS item_id, h.session_id, snippet(history, 0, ?, ?, '…', 14) AS snippet,
+      s.title, s.agent, s.archived, s.parent_id, s.updated_at
+    FROM history h JOIN sessions s ON s.id = h.session_id
+    WHERE history MATCH ? AND s.project_id = ? ORDER BY bm25(history) LIMIT 200`,
+  MARK[0], MARK[1], w.map((x, i) => `"${x}"${i === w.length - 1 ? '*' : ''}`).join(' AND '), projectId);
+  const bySession = new Map<string, Row>();
+  for (const h of hits) {
+    const s = bySession.get(h.session_id);
+    if (s) s.hits++; else bySession.set(h.session_id, { ...h, hits: 1 }); // hits come best first
+  }
+  return [...bySession.values()].slice(0, limit);
 }
 
 export function searchMemory(projectId: number, text: string, k = 8) {

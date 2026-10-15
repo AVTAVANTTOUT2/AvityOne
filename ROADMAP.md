@@ -10,6 +10,8 @@ Fonctions prévues pour AvityOne, regroupées par domaine. Quand une fonction es
   mode plan, revue croisée, context pack, mémoire partagée MCP, base de connaissance FTS5, CLI `avity`.
 - **v0.2** : worktrees git par session, exécution parallèle d'un plan, merge avec revue du diff combiné, interface
   React + libraries.dev.
+- **Non publié** : gestion des sessions (renommage, épinglage, archivage, suppression), recherche dans l'historique
+  des conversations, export Markdown, brouillons propres à chaque session.
 
 Détail dans le [CHANGELOG](CHANGELOG.md).
 
@@ -92,12 +94,12 @@ Graphiti (graphe temporel), basic-memory (Markdown comme source de vérité).
 
 ## Sessions et conversations
 
-- [ ] Renommage, archivage et suppression des sessions.
-- [ ] Épinglage des sessions.
-- [ ] Recherche dans l’historique des conversations.
+- [x] Renommage, archivage et suppression des sessions.
+- [x] Épinglage des sessions.
+- [x] Recherche dans l’historique des conversations.
 - [ ] Duplication et bifurcation des conversations.
-- [ ] Export des conversations.
-- [ ] Brouillons persistants propres à chaque session.
+- [x] Export des conversations.
+- [x] Brouillons persistants propres à chaque session.
 - [ ] Modification et renvoi des messages.
 - [ ] Régénération des réponses.
 - [ ] Copie dédiée des réponses et blocs de code.

@@ -1,6 +1,7 @@
 // `avity` — terminal client for a running AvityOne server.
 //   avity ask [-a agent] [--plan] [-p project] [-s session] "demande"
 //   avity projects | avity sessions <projet> | avity memory <projet> [recherche]
+//   avity search <projet> <texte> | avity export <session> > session.md
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { config } from './config.ts';
@@ -71,5 +72,10 @@ try {
     const r = await api(`/projects/${await projectId(rest[0])}/memory${rest[1] ? '?q=' + encodeURIComponent(rest.slice(1).join(' ')) : ''}`);
     for (const m of r.memory) console.log(`[${m.kind}] ${m.text}`);
     for (const d of r.docs) console.log(`📄 ${d.path}: ${d.text.slice(0, 160).replace(/\n/g, ' ')}`);
-  } else console.log('usage: avity ask [-a agent] [--plan] [-p projet] [-s session] "demande" | projects | sessions [projet] | memory [projet] [recherche]');
+  } else if (cmd === 'search' && rest.length > 1) {
+    for (const h of await api(`/projects/${await projectId(rest[0])}/search?q=${encodeURIComponent(rest.slice(1).join(' '))}`)) {
+      console.log(`${h.session_id}\t${h.title ?? ''}\t${h.hits} résultat(s)\n  ${h.snippet.replace(/\s+/g, ' ').replace(/\u0002/g, '\x1b[1m').replace(/\u0003/g, '\x1b[0m')}`);
+    }
+  } else if (cmd === 'export' && rest[0]) process.stdout.write((await api(`/sessions/${rest[0]}/export`)).markdown);
+  else console.log('usage: avity ask [-a agent] [--plan] [-p projet] [-s session] "demande" | projects | sessions [projet] | memory [projet] [recherche] | search <projet> <texte> | export <session>');
 } catch (e: any) { console.error('erreur:', e.message); process.exit(1); }

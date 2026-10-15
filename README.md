@@ -40,6 +40,7 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Mémoire partagée MCP** | Chaque agent reçoit le serveur MCP `avity` (`avity_memory_search`, `avity_memory_add`, `avity_recent_sessions`). Ce que Codex apprend, Claude le sait. |
 | **Base de connaissance** | Indexation des `.md/.txt` du projet (README, docs/, AGENTS.md, `.serena/memories`…) en FTS5, plus recherche dans l'UI. |
 | **UI premium** | React + [libraries.dev](https://libraries.dev) (thème et effets, voir ci-dessous) : projets et sessions, flux en streaming (messages, réflexions, outils animés, diffs, plans, permissions), sélecteurs modèle/effort exposés par chaque agent, dictée vocale, panneau mémoire et aperçu du contexte injecté. Utilisable sur mobile. |
+| **Sessions** | Renommer, épingler, archiver, supprimer (menu « ⋯ » de l'en-tête). Recherche plein texte dans toutes les conversations du projet, avec saut au message trouvé. Export Markdown. Un brouillon par session, conservé sur le serveur. |
 | **Permissions** | Auto-approbation configurable. La validation de plan et les éditions en mode plan te reviennent toujours. |
 
 ## Installation (Debian 13)
@@ -64,7 +65,8 @@ Le token d'accès à l'UI se lit avec `jq -r .token ~/.avityone/config.json`.
 ## Utilisation
 
 - **UI** : `http://<serveur>:7710`. Crée un projet (dossier existant, URL git à cloner ou dossier vide pour un projet « vie »), ouvre une session et écris.
-- **CLI** : `avity ask -p monprojet "/plan migrer l'auth vers des sessions"`, `avity memory monprojet auth`, `avity sessions monprojet`.
+- **CLI** : `avity ask -p monprojet "/plan migrer l'auth vers des sessions"`, `avity memory monprojet auth`, `avity sessions monprojet`,
+  `avity search monprojet "migration auth"`, `avity export <session> > session.md`.
 - **Brief projet** : écris `.avity/brief.md` dans le projet (objectifs, stack, contraintes). Il est injecté en tête de chaque session.
 
 ## Interface : libraries.dev à plein régime
@@ -115,7 +117,7 @@ Node 24 exécute le TypeScript du serveur directement (type stripping) : pas de 
 | [`src/mcp.ts`](src/mcp.ts) | Serveur MCP mémoire injecté dans chaque agent |
 | [`src/store.ts`](src/store.ts) | SQLite + FTS5 |
 | [`src/server.ts`](src/server.ts) | API HTTP, SSE, UI statique, auth |
-| [`web/src/`](web/src/) | UI React (Vite) : `App` (shell), `Feed` (conversation), `Composer` (dock), `Sidebar`, `Panel`, `brand` (logo, couvertures, identités d'agents), `icons`, `ui` (primitives) |
+| [`web/src/`](web/src/) | UI React (Vite) : `App` (shell), `Feed` (conversation), `Composer` (dock), `Sidebar`, `SessionMenu` (titre et actions de session), `Panel`, `brand` (logo, couvertures, identités d'agents), `icons`, `ui` (primitives) |
 
 ## Feuille de route et versions
 

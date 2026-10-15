@@ -5,9 +5,9 @@ import { join, normalize, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { config, availableAgents } from './config.ts';
-import { all, one, run, searchMemory, searchKb, addMemory } from './store.ts';
+import { all, one, run, searchMemory, searchKb, addMemory, searchHistory } from './store.ts';
 import { hub, httpError } from './hub.ts';
-import { indexProject, buildPack, summarize } from './context.ts';
+import { indexProject, buildPack, summarize, exportMarkdown } from './context.ts';
 
 const WEB = fileURLToPath(new URL('../web/dist/', import.meta.url)); // built by `npm run build`
 const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
@@ -40,7 +40,8 @@ const routes: [string, RegExp, Handler][] = [
   }],
   ['POST', /^\/api\/projects$/, (_, b) => hub.createProject(b)],
   ['POST', /^\/api\/projects\/(\d+)\/reindex$/, (m) => ({ chunks: indexProject(project(m[1])) })],
-  ['GET', /^\/api\/projects\/(\d+)\/sessions$/, (m) => all('SELECT id, title, agent, mode, turns, summary, parent_id, updated_at FROM sessions WHERE project_id = ? ORDER BY updated_at DESC LIMIT 200', Number(m[1]))],
+  ['GET', /^\/api\/projects\/(\d+)\/sessions$/, (m) => hub.listSessions(Number(m[1]))],
+  ['GET', /^\/api\/projects\/(\d+)\/search$/, (m, _, u) => searchHistory(Number(m[1]), u.searchParams.get('q') ?? '')],
   ['POST', /^\/api\/projects\/(\d+)\/sessions$/, (m, b) => hub.createSession(Number(m[1]), b.title, { isolated: !!b.isolated })],
   ['GET', /^\/api\/projects\/(\d+)\/memory$/, (m, _, u) => {
     const id = Number(m[1]), q = u.searchParams.get('q');
@@ -51,6 +52,10 @@ const routes: [string, RegExp, Handler][] = [
   ['POST', /^\/api\/projects\/(\d+)\/memory$/, (m, b) => ({ added: addMemory(Number(m[1]), String(b.kind ?? 'fact'), String(b.text ?? '').slice(0, 1000)) })],
   ['DELETE', /^\/api\/memory\/(\d+)$/, (m) => { run('DELETE FROM memory WHERE rowid = ?', Number(m[1])); return { ok: true }; }],
   ['GET', new RegExp(`^/api/sessions/${S}$`), (m) => hub.snapshot(m[1])],
+  ['PATCH', new RegExp(`^/api/sessions/${S}$`), (m, b) => hub.updateSession(m[1], b)],
+  ['DELETE', new RegExp(`^/api/sessions/${S}$`), (m) => hub.deleteSession(m[1])],
+  ['PUT', new RegExp(`^/api/sessions/${S}/draft$`), (m, b) => hub.setDraft(m[1], String(b.text ?? ''))],
+  ['GET', new RegExp(`^/api/sessions/${S}/export$`), (m) => exportMarkdown(m[1])],
   ['GET', new RegExp(`^/api/sessions/${S}/context$`), (m, _, u) => {
     const s = one('SELECT project_id, worktree FROM sessions WHERE id = ?', m[1]);
     if (!s) throw httpError(404, 'session inconnue');

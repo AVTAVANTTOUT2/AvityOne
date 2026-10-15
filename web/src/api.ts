@@ -3,7 +3,12 @@
 export type Item = { id: number; type: string; [k: string]: any };
 export type Agent = { id: string; name: string; strengths: string; installed: boolean };
 export type Project = { id: number; name: string; path: string };
-export type SessionRow = { id: string; title: string | null; agent: string | null; mode: string; turns: number; summary: string | null; parent_id?: string | null; updated_at: string };
+export type SessionRow = {
+  id: string; title: string | null; agent: string | null; mode: string; turns: number; summary: string | null; parent_id?: string | null;
+  pinned: number; archived: number; draft?: string | null; updated_at: string;
+};
+/** One session matching a history search; `snippet` marks matches with \u0002 … \u0003. */
+export type SearchHit = { session_id: string; title: string | null; agent: string | null; archived: number; parent_id: string | null; updated_at: string; item_id: number; snippet: string; hits: number };
 export type ConfigOption = { id: string; name: string; type: string; category?: string; currentValue: any; options: any[] };
 export type LiveState = {
   busy: boolean; agent: string | null; mode: 'agent' | 'plan'; autoApprove: boolean; connected: boolean;
