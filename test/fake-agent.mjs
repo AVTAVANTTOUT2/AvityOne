@@ -24,6 +24,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       return reply({});
     case 'session/prompt': {
       const text = m.params.prompt.map((b) => b.text).join('\n');
+      if (text.includes('<transcript>')) { // AvityOne's memory module: answer with a summary that names the session
+        up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"title": "Titre automatique", "summary": "Résumé.", "memories": []}' } });
+        return reply({ stopReason: 'end_turn' });
+      }
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `mode=${mode} ` } });
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `ctx=${text.includes('<avity-context>')}` } });
       const kind = m.params.prompt.at(-1).text.includes('exitplan') ? 'switch_mode' : 'edit'; // « exitplan »: leave plan mode like Claude's ExitPlanMode

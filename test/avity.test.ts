@@ -23,8 +23,9 @@ writeFileSync(join(home, 'config.json'), JSON.stringify({
 }));
 
 const { route } = await import('../src/router.ts');
-const { ftsQuery, addMemory, searchMemory, run } = await import('../src/store.ts');
+const { ftsQuery, addMemory, searchMemory, searchHistory, run, one } = await import('../src/store.ts');
 const { hub, planTasks } = await import('../src/hub.ts');
+const { exportMarkdown, summarize } = await import('../src/context.ts');
 const avail = ['fake', 'fake2'];
 
 test('router: mention, /plan, rules, continuity', () => {
@@ -173,6 +174,53 @@ test('parallel: plan split into sub-sessions in worktrees, routed agents, merge 
   assert.match(items.find((i: any) => i.type === 'error').text, /conflit sur a\.txt/);
   const review = await waitFor(() => hub.snapshot(parent.id).items.find((i: any) => i.type === 'review' && i.status === 'done'));
   assert.equal(review.agent, 'fake', 'cross-review by the other agent');
+});
+
+test('sessions: rename, pin, archive, draft, history search, export, delete', async () => {
+  const p = await hub.createProject({ name: 'hist' });
+  const a = hub.createSession(p.id), b = hub.createSession(p.id);
+  hub.prompt(a.id, 'ajoute une fonctionnalité d\'export');
+  await waitIdle(a.id);
+
+  hub.updateSession(a.id, { title: '  Export   Markdown ', pinned: true });
+  hub.prompt(b.id, 'autre chose');
+  await waitIdle(b.id);
+  const rows = hub.listSessions(p.id);
+  assert.deepEqual(rows.map((r: any) => r.id), [a.id, b.id], 'pinned first even when older');
+  assert.equal(rows[0].title, 'Export Markdown');
+  await summarize(a.id); await summarize(b.id);
+  assert.equal(hub.snapshot(a.id).session!.title, 'Export Markdown', 'summaries keep a chosen title');
+  assert.equal(hub.snapshot(b.id).session!.title, 'Titre automatique');
+
+  hub.setDraft(b.id, 'brouillon en cours');
+  assert.equal(hub.snapshot(b.id).session!.draft, 'brouillon en cours');
+  assert.equal(hub.snapshot(a.id).session!.draft, null, 'drafts are per session');
+
+  const [hit] = searchHistory(p.id, 'FONCTIONNALITE');
+  assert.equal(hit.session_id, a.id, 'accents and case folded');
+  assert.match(hit.snippet, /\u0002fonctionnalité\u0003/);
+  assert.equal(searchHistory(p.id, 'fonctionnalite expo')[0]?.session_id, a.id, 'all words, last one as a prefix');
+  assert.equal(searchHistory(p.id, 'fonctionnalite absent').length, 0);
+  assert.equal(searchHistory(p.id, 'ctx=true')[0]?.hits, 1, 'streamed answers are indexed once, with their final text');
+
+  const md = exportMarkdown(a.id);
+  assert.match(md.filename, /^export-markdown-\d{4}-\d{2}-\d{2}\.md$/);
+  assert.match(md.markdown, /^# Export Markdown\n/);
+  assert.match(md.markdown, /### Toi → Fake\n\najoute une fonctionnalité d'export/);
+  assert.match(md.markdown, /### Fake\n\nmode=default ctx=true/);
+
+  hub.updateSession(a.id, { archived: true, pinned: false });
+  assert.deepEqual(hub.listSessions(p.id).map((r: any) => [r.id, r.archived]), [[b.id, 0], [a.id, 1]], 'archived last');
+
+  const kid = hub.createSession(p.id, 'tâche', { parentId: a.id });
+  run('INSERT INTO items (session_id, data) VALUES (?, ?)', kid.id, JSON.stringify({ type: 'user', text: 'sous-tâche fonctionnalité' }));
+  const wt = hub.createSession(p.id);
+  run('UPDATE sessions SET worktree = ? WHERE id = ?', '/tmp/x', wt.id);
+  assert.throws(() => hub.deleteSession(wt.id), /worktree non mergé/);
+  assert.deepEqual(hub.deleteSession(a.id), { deleted: 2 }, 'sub-sessions go with their parent');
+  assert.throws(() => hub.snapshot(a.id), /session inconnue/);
+  assert.equal(one('SELECT count(*) AS n FROM items WHERE session_id IN (?, ?)', a.id, kid.id)!.n, 0);
+  assert.equal(searchHistory(p.id, 'fonctionnalite').length, 0, 'search index cleaned up');
 });
 
 test('mcp: memory tools over stdio', async () => {

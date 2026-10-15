@@ -219,7 +219,8 @@ export const webgl = () => gl ??= (() => {
 
 /**
  * metal-fx keeps its host invisible until the first WebGL frame lands. If that never happens (context lost,
- * GPU blocklisted…), fall back to the plain element so a primary control can never vanish.
+ * GPU blocklisted…), fall back to the plain element so a primary control can never vanish. Without hardware WebGL,
+ * metal-fx isn't mounted at all: its own fallback leaves MetalText's rim canvas stranded in the page's top-left corner.
  */
 export function MetalSafe({ children, fallback }: { children: ReactNode; fallback: ReactNode }) {
   const wrap = useRef<HTMLSpanElement>(null);

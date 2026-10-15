@@ -65,7 +65,8 @@ export function Feed({ items, live, project, agents, act, onSuggest }: {
         return (
           <Fragment key={it.id}>
             {head && <AgentHead id={it.agent ?? turnAgent} agents={agents} working={working} latest={latest} />}
-            <Row it={it} live={working} latest={latest} agents={agents} act={act} />
+            {/* data-item lets a history-search hit scroll to its message. */}
+            <div className="feed-item" data-item={it.id}><Row it={it} live={working} latest={latest} agents={agents} act={act} /></div>
           </Fragment>
         );
       })}
