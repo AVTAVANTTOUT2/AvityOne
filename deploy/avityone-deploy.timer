@@ -1,0 +1,9 @@
+[Unit]
+Description=AvityOne - surveille origin/@BRANCH@ chaque minute
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+
+[Install]
+WantedBy=timers.target

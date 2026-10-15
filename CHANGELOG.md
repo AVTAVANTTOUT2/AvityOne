@@ -7,6 +7,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Ajouté
 
+- **CI/CD preprod → prod** : CI GitHub Actions (types, tests, build) sur les PR vers `preprod` et `main` ; chaque merge
+  sur `preprod` redéploie la VM preprod, chaque merge `preprod` → `main` redéploie la prod (`deploy/autodeploy.sh`).
 - **Gestion des sessions** : menu « ⋯ » dans l'en-tête de la session pour renommer (ou double-clic sur le titre),
   épingler, archiver et supprimer. Les sessions épinglées passent en tête de liste, les archivées sont repliées en bas.
   Un titre choisi n'est plus écrasé par les résumés automatiques ; un titre vidé revient au nommage automatique.

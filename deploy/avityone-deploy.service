@@ -1,0 +1,12 @@
+[Unit]
+Description=AvityOne - déploiement continu de origin/@BRANCH@
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@APP@
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=@HOME@
+ExecStart=/usr/bin/bash @APP@/deploy/autodeploy.sh @BRANCH@

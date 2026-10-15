@@ -62,6 +62,22 @@ opencode auth login
 
 Le token d'accès à l'UI se lit avec `jq -r .token ~/.avityone/config.json`.
 
+## Déploiement continu : preprod → prod
+
+| Branche | Serveur | Mise à jour |
+|---|---|---|
+| `preprod` (branche par défaut) | VM `avityone-preprod` · https://avityone-preprod.tail5feb4c.ts.net | à chaque merge |
+| `main` | VM `avityone` · https://avityone.tail5feb4c.ts.net | à chaque merge de la PR `preprod` → `main` |
+
+1. Toute PR vise `preprod`. La CI (`.github/workflows/ci.yml` : types, tests, build) doit passer pour merger.
+2. Au merge, la VM preprod se met à jour en moins d'une minute : `npm ci`, build, redémarrage du service.
+3. Pour livrer en prod : PR `preprod` → `main`, mergée en **merge commit** (pas de squash, sinon les deux branches
+   divergent). La CI refuse toute autre source pour `main`, la prod est donc exactement ce qui a tourné en preprod.
+
+Chaque VM interroge GitHub chaque minute (`avityone-deploy.timer` → `deploy/autodeploy.sh <branche>`) : pas de
+secret, pas de port ouvert. Activation sur une VM : `bash deploy/install.sh preprod` (ou `main`).
+Suivi : `journalctl -u avityone-deploy -f`. Redéployer le même commit : `rm ~/.avityone/deployed`.
+
 ## Utilisation
 
 - **UI** : `http://<serveur>:7710`. Crée un projet (dossier existant, URL git à cloner ou dossier vide pour un projet « vie »), ouvre une session et écris.
