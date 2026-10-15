@@ -1,5 +1,5 @@
 // Shared primitives: markdown, diff, liquid segmented control, liquid plus-menu, popover, toasts.
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { Liquid } from 'liquid-gooey';
@@ -9,11 +9,42 @@ DOMPurify.addHook('afterSanitizeAttributes', (n) => {
   if (n.tagName === 'A') { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); }
 });
 
-/** Agent output is untrusted (prompt injection can reach it): always sanitized. */
+/**
+ * Agent output is untrusted (prompt injection can reach it): always sanitized. Code blocks get a copy button,
+ * added as fixed markup around the already-sanitized <pre>, and handled by one delegated click.
+ */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text ?? '', { async: false, gfm: true }) as string), [text]);
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text ?? '', { async: false, gfm: true }) as string)
+    .replace(/<pre(\s[^>]*)?>/g, '<div class="code-block"><button type="button" class="code-copy" data-copy-code="" aria-label="Copier le code">Copier</button>$&')
+    .replace(/<\/pre>/g, '</pre></div>'), [text]);
+  return <div className="md" onClick={copyCode} dangerouslySetInnerHTML={{ __html: html }} />;
 });
+
+function copyCode(e: MouseEvent<HTMLDivElement>) {
+  const pre = (e.target as Element).closest('[data-copy-code]')?.nextElementSibling;
+  if (pre) copyText(pre.textContent ?? '');
+}
+
+/** The Clipboard API needs HTTPS or localhost; the UI is often served over plain HTTP on a LAN, hence the fallback. */
+export async function copyText(text: string) {
+  try {
+    if (!window.isSecureContext || !navigator.clipboard) throw new Error('clipboard');
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const prev = document.activeElement as HTMLElement | null;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    prev?.focus();
+    if (!ok) return toast('Copie impossible dans ce navigateur.', true);
+  }
+  toast('Copié dans le presse-papiers.');
+}
 
 /** Line diff via LCS, unchanged runs folded to 3 lines of context. */
 export function Diff({ path, oldText, newText }: { path: string; oldText?: string; newText?: string }) {
@@ -129,17 +160,30 @@ export function Popover({ trigger, children, down }: { trigger: (toggle: () => v
   );
 }
 
-export const toast = (msg: string, bad = false) => window.dispatchEvent(new CustomEvent('avity:toast', { detail: { msg, bad } }));
+export type ToastAction = { label: string; onClick: () => void };
+type Toast = { msg: string; bad: boolean; action?: ToastAction };
+
+export const toast = (msg: string, bad = false, action?: ToastAction) => window.dispatchEvent(new CustomEvent('avity:toast', { detail: { msg, bad, action } }));
 
 export function Toaster() {
-  const [t, setT] = useState<{ msg: string; bad: boolean } | null>(null);
+  const [t, setT] = useState<Toast | null>(null);
   useEffect(() => {
     let timer = 0;
-    const on = (e: Event) => { setT((e as CustomEvent).detail); clearTimeout(timer); timer = window.setTimeout(() => setT(null), 4200); };
+    const on = (e: Event) => {
+      const next: Toast = (e as CustomEvent).detail;
+      setT(next);
+      clearTimeout(timer);
+      timer = window.setTimeout(() => setT(null), next.action ? 7000 : 4200);
+    };
     window.addEventListener('avity:toast', on);
     return () => window.removeEventListener('avity:toast', on);
   }, []);
-  return t ? <div className={`toast ${t.bad ? 'bad' : ''}`} role="status">{t.msg}</div> : null;
+  return t ? (
+    <div className={`toast ${t.bad ? 'bad' : ''}`} role="status">
+      {t.msg}
+      {t.action && <button className="toast-act" onClick={() => { setT(null); t.action!.onClick(); }}>{t.action.label}</button>}
+    </div>
+  ) : null;
 }
 
 /** Wraps an async action so failures surface as a toast instead of an unhandled rejection. */

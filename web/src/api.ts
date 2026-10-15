@@ -5,7 +5,7 @@ export type Agent = { id: string; name: string; strengths: string; installed: bo
 export type Project = { id: number; name: string; path: string };
 export type SessionRow = {
   id: string; title: string | null; agent: string | null; mode: string; turns: number; summary: string | null; parent_id?: string | null;
-  pinned: number; archived: number; draft?: string | null; updated_at: string;
+  forked_from?: string | null; pinned: number; archived: number; draft?: string | null; updated_at: string;
 };
 /** One session matching a history search; `snippet` marks matches with \u0002 … \u0003. */
 export type SearchHit = { session_id: string; title: string | null; agent: string | null; archived: number; parent_id: string | null; updated_at: string; item_id: number; snippet: string; hits: number };

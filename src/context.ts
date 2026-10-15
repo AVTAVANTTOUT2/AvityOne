@@ -92,7 +92,7 @@ export function buildPack(p: Row, sessionId: string, prompt: string, handoff = '
   if (docs.length) parts.push(`## Extraits de la base de connaissance\n${docs.map((d) => `### ${d.path}\n${d.text.slice(0, 1200)}`).join('\n\n')}`);
   const recent = all(`SELECT title, summary FROM sessions WHERE project_id = ? AND id <> ? AND summary IS NOT NULL ORDER BY updated_at DESC LIMIT 3`, p.id, sessionId);
   if (recent.length) parts.push(`## Sessions récentes\n${recent.map((r) => `- ${r.title ?? 'session'} : ${r.summary}`).join('\n')}`);
-  if (handoff) parts.push(`## Reprise : transcript de cette session avec un autre agent\n${handoff}`);
+  if (handoff) parts.push(`## Reprise : conversation précédente de cette session (avec toi ou un autre agent)\n${handoff}`);
   const text = `<avity-context>
 Contexte fourni par AvityOne, l'orchestrateur qui te pilote. Le serveur MCP "avity" te donne avity_memory_search
 (mémoire + docs du projet) et avity_memory_add (enregistre une décision, convention ou piège DURABLE).

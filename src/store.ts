@@ -35,7 +35,7 @@ export const run = (sql: string, ...p: any[]) => db.prepare(sql).run(...p);
 // Columns added after v0.1, created in place so existing databases keep working.
 const cols = all('PRAGMA table_info(sessions)').map((c) => c.name);
 for (const [c, def] of [['parent_id', 'TEXT'], ['isolated', 'INTEGER DEFAULT 0'], ['worktree', 'TEXT'],
-  ['pinned', 'INTEGER DEFAULT 0'], ['archived', 'INTEGER DEFAULT 0'], ['renamed', 'INTEGER DEFAULT 0'], ['draft', 'TEXT']]) {
+  ['pinned', 'INTEGER DEFAULT 0'], ['archived', 'INTEGER DEFAULT 0'], ['renamed', 'INTEGER DEFAULT 0'], ['draft', 'TEXT'], ['forked_from', 'TEXT']]) {
   if (!cols.includes(c)) db.exec(`ALTER TABLE sessions ADD COLUMN ${c} ${def}`);
 }
 

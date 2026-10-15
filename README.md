@@ -40,7 +40,7 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Mémoire partagée MCP** | Chaque agent reçoit le serveur MCP `avity` (`avity_memory_search`, `avity_memory_add`, `avity_recent_sessions`). Ce que Codex apprend, Claude le sait. |
 | **Base de connaissance** | Indexation des `.md/.txt` du projet (README, docs/, AGENTS.md, `.serena/memories`…) en FTS5, plus recherche dans l'UI. |
 | **UI premium** | React + [libraries.dev](https://libraries.dev) (thème et effets, voir ci-dessous) : projets et sessions, flux en streaming (messages, réflexions, outils animés, diffs, plans, permissions), sélecteurs modèle/effort exposés par chaque agent, dictée vocale, panneau mémoire et aperçu du contexte injecté. Utilisable sur mobile. |
-| **Sessions** | Renommer, épingler, archiver, supprimer (menu « ⋯ » de l'en-tête). Recherche plein texte dans toutes les conversations du projet, avec saut au message trouvé. Export Markdown. Un brouillon par session, conservé sur le serveur. |
+| **Sessions** | Renommer, épingler, dupliquer, archiver, supprimer (menu « ⋯ » de l'en-tête). Bifurquer depuis n'importe quelle réponse, modifier et renvoyer un message, régénérer la dernière réponse (même agent ou un autre), copier un message, une réponse ou un bloc de code. Recherche plein texte dans toutes les conversations du projet, avec saut au message trouvé. Export Markdown. Un brouillon par session, conservé sur le serveur. Alt+↑ / Alt+↓ et l'historique du navigateur pour passer d'une session à l'autre. |
 | **Permissions** | Auto-approbation configurable. La validation de plan et les éditions en mode plan te reviennent toujours. |
 
 ## Installation (Debian 13)

@@ -30,7 +30,9 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       }
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `mode=${mode} ` } });
       up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `ctx=${text.includes('<avity-context>')}` } });
-      const kind = m.params.prompt.at(-1).text.includes('exitplan') ? 'switch_mode' : 'edit'; // « exitplan »: leave plan mode like Claude's ExitPlanMode
+      const ask = m.params.prompt.at(-1).text;
+      if (ask.includes('bloc de code')) up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\n```js\nconsole.log("avity");\n```' } });
+      const kind = ask.includes('exitplan') ? 'switch_mode' : 'edit'; // « exitplan »: leave plan mode like Claude's ExitPlanMode
       up({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Edit a.txt', kind, status: 'pending' });
       const id = nextId++;
       send({ id, method: 'session/request_permission', params: { sessionId: 'fake-1', toolCall: { toolCallId: 't1', kind, title: 'Edit a.txt' },

@@ -10,7 +10,7 @@ import { Feed, activity, type FeedActions } from './Feed';
 import { Dock, type DockActions } from './Composer';
 import { Panel } from './Panel';
 import { SessionMenu, TitleInput, type SessionActions } from './SessionMenu';
-import { MetalSafe, Toaster, guard, toast } from './ui';
+import { MetalSafe, Toaster, copyText, guard, toast } from './ui';
 
 const Hero = lazy(() => import('./Hero'));
 const store = {
@@ -86,6 +86,7 @@ function Workspace() {
   const feed = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const focusItem = useRef<number | null>(null);
+  const fromHistory = useRef(false); // browser back/forward: follow the URL without stacking a new entry
 
   // Drafts belong to their session and live on the server (they follow you from phone to desktop). Saves are
   // debounced and always go to the session the text was typed in, even if you switch sessions meanwhile.
@@ -124,20 +125,24 @@ function Workspace() {
   const openSession = useCallback(async (id: string, itemId?: number) => {
     flushDraft();
     const snap = await api<Snapshot>(`/sessions/${id}`);
+    const prev = sid.current;
     // Reopening the same session (stream reconnect) keeps what is being typed.
-    if (id !== sid.current) { setDraft(snap.session.draft ?? ''); setRenaming(false); }
+    if (id !== prev) { setDraft(snap.session.draft ?? ''); setRenaming(false); }
     sid.current = id;
     setSession(snap.session); setLive(snap.state); setItems(snap.items);
     focusItem.current = itemId ?? null;
     stick.current = itemId == null;
-    history.replaceState(null, '', `#/p/${snap.session.project_id}/s/${id}`);
+    // Each session switch is a history entry: back/forward (and Android's back button) walk the visited sessions.
+    const url = `#/p/${snap.session.project_id}/s/${id}`;
+    if (location.hash !== url) history[prev && prev !== id && !fromHistory.current ? 'pushState' : 'replaceState'](null, '', url);
     setSide(false);
   }, [flushDraft]);
 
   const closeSession = useCallback((projectId: number) => {
     flushDraft();
+    const had = sid.current;
     sid.current = null; setSession(null); setLive(null); setItems([]); setDraft('');
-    history.replaceState(null, '', `#/p/${projectId}`);
+    history[had && !fromHistory.current ? 'pushState' : 'replaceState'](null, '', `#/p/${projectId}`);
   }, [flushDraft]);
 
   const openProject = useCallback(async (id: number, sessionId?: string) => {
@@ -160,6 +165,18 @@ function Workspace() {
     }).catch((e) => toast(e.message, true));
   }, [openProject]);
 
+  useEffect(() => {
+    const pop = () => {
+      const [, p, s] = location.hash.match(/^#\/p\/(\d+)(?:\/s\/([\w-]+))?/) ?? [];
+      if (!p) return;
+      fromHistory.current = true;
+      const go = Number(p) !== pid.current ? openProject(Number(p), s) : s ? openSession(s) : Promise.resolve(closeSession(Number(p)));
+      go.catch((e) => toast(e.message, true)).finally(() => { fromHistory.current = false; });
+    };
+    window.addEventListener('popstate', pop);
+    return () => window.removeEventListener('popstate', pop);
+  }, [openProject, openSession, closeSession]);
+
   // live events, batched per animation frame
   const queue = useRef(new Map<number, Item>());
   const frame = useRef(0);
@@ -167,6 +184,12 @@ function Workspace() {
     if (ev.type === 'sessions') { if (ev.projectId === pid.current) loadSessions(ev.projectId); return; }
     if (ev.sessionId !== sid.current) return;
     if (ev.type === 'state') { setLive(ev.state); return; }
+    if (ev.type === 'reset') {
+      // The conversation was cut at `fromId` (edit, regenerate): drop those items, including any still queued.
+      for (const id of queue.current.keys()) if (id >= ev.fromId) queue.current.delete(id);
+      setItems((prev) => prev.filter((it) => it.id < ev.fromId));
+      return;
+    }
     if (ev.type !== 'item') return;
     queue.current.set(ev.item.id, ev.item);
     frame.current ||= requestAnimationFrame(() => {
@@ -206,6 +229,21 @@ function Workspace() {
     openSession: (id: string) => { openSession(id).catch((e) => toast(e.message, true)); },
     merge: guard(() => api(`/sessions/${S()}/merge`, {})),
     useText: editDraft,
+    copy: copyText,
+    edit: async (itemId, text, fork) => {
+      try {
+        const r = await api<{ sessionId: string }>(`/sessions/${S()}/edit`, { itemId, text, fork });
+        stick.current = true;
+        if (r.sessionId !== sid.current) { await openSession(r.sessionId); toast('Bifurcation créée : la conversation d\'origine reste intacte.'); }
+        return true;
+      } catch (e) { toast((e as Error).message, true); return false; }
+    },
+    regenerate: guard(async (agent?: string) => { await api(`/sessions/${S()}/regenerate`, { agent }); stick.current = true; }),
+    fork: guard(async (before?: number) => {
+      const s = await api<SessionRow>(`/sessions/${S()}/fork`, { before });
+      await openSession(s.id);
+      toast(before == null ? 'Session dupliquée.' : 'Bifurcation créée : la suite part d\'ici, l\'original reste intact.');
+    }),
   }), [openSession, editDraft]);
   const dockAct: DockActions = useMemo(() => ({
     send: async (text, agent, mode) => {
@@ -234,6 +272,7 @@ function Workspace() {
   const sessionAct: SessionActions = {
     rename: () => setRenaming(true),
     pin: guard((on: boolean) => patch({ pinned: on })),
+    duplicate: () => feedAct.fork(),
     archive: guard(async (on: boolean) => { await patch({ archived: on }); toast(on ? 'Session archivée : retrouve-la en bas de la liste.' : 'Session désarchivée.'); }),
     exportMd: guard(async () => {
       const { filename, markdown } = await api<{ filename: string; markdown: string }>(`/sessions/${S()}/export`);
@@ -262,6 +301,23 @@ function Workspace() {
     await openSession(s.id);
   });
 
+  // Previous / next session, in the sidebar's order (pinned, recent, archived). Alt+↑ / Alt+↓ as in Slack.
+  const at = sessions.findIndex((s) => s.id === session?.id);
+  const step = useCallback((d: -1 | 1) => {
+    const i = sessions.findIndex((s) => s.id === sid.current);
+    const next = sessions[i < 0 ? 0 : i + d];
+    if (next) openSession(next.id).catch((e) => toast(e.message, true));
+  }, [sessions, openSession]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+      e.preventDefault();
+      step(e.key === 'ArrowUp' ? -1 : 1);
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [step]);
+
   const busyInfo = activity(items, live);
   const last = items.at(-1);
   const planReady = !!session && !!live && !live.busy && live.mode === 'plan' && last?.type === 'end';
@@ -286,6 +342,11 @@ function Workspace() {
             {session && (
               <div className="meta">
                 {!!row?.archived && <span className="tag"><Icon name="archive" size={11} />archivée</span>}
+                {row?.forked_from && (
+                  <button className="tag link" onClick={() => openSession(row.forked_from!).catch((e) => toast(e.message, true))} title="Ouvrir la session d'origine">
+                    <Icon name="branch" size={11} />bifurcation
+                  </button>
+                )}
                 {live?.agent ? <><AgentAvatar id={live.agent} size={16} paused />{agents.find((a) => a.id === live.agent)?.name}</> : <span>aucun agent encore</span>}
                 {live?.mode === 'plan' && <span className="tag plan">plan</span>}
                 {live?.modeId && <span className="hide-mobile">· {live.modeId}</span>}
@@ -302,6 +363,10 @@ function Workspace() {
               </select>
             ))}
           </div>
+          <span className="row hide-mobile" style={{ gap: 2 }}>
+            <button className="chip icon" onClick={() => step(-1)} disabled={at <= 0} aria-label="Session précédente" title="Session précédente (Alt+↑)"><Icon name="chevronUp" size={15} /></button>
+            <button className="chip icon" onClick={() => step(1)} disabled={at < 0 ? !sessions.length : at >= sessions.length - 1} aria-label="Session suivante" title="Session suivante (Alt+↓)"><Icon name="chevron" size={15} /></button>
+          </span>
           {live?.worktree && <button className="chip" onClick={dockAct.merge} disabled={live.busy}><Icon name="merge" size={14} /><span className="hide-mobile">Merger</span></button>}
           {row && <SessionMenu session={row} busy={!!live?.busy} act={sessionAct} />}
           <button className={`chip icon ${panel ? 'on' : ''}`} title="Mémoire & contexte" aria-label="Mémoire et contexte" aria-pressed={panel}

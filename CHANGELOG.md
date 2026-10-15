@@ -18,9 +18,23 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   `avity export <session>`.
 - **Brouillons par session**, enregistrés sur le serveur : chaque session garde le sien, d'un appareil à l'autre et
   après rechargement.
+- **Bifurcation et duplication** : « Bifurquer ici » sous chaque réponse ouvre une nouvelle session qui reprend la
+  conversation jusqu'à ce point ; « Dupliquer » (menu « ⋯ ») la copie en entier. L'original reste intact. La copie
+  repart avec un agent neuf qui reçoit le transcript copié, et sans les fichiers d'un éventuel worktree. Son en-tête
+  renvoie à la session d'origine.
+- **Modification et renvoi des messages** : crayon au survol d'un message. « Renvoyer » remplace la suite de la
+  conversation (l'agent repart avec ce qui précède) ; « Dans une bifurcation » garde la conversation et repart de ce
+  message dans une nouvelle session. Les fichiers déjà modifiés par l'agent ne sont pas restaurés.
+- **Régénération** de la dernière réponse, avec le même agent ou un autre, et « Réessayer » après un tour en échec.
+- **Copie** d'un message, d'une réponse entière ou d'un bloc de code (bouton au survol). Fonctionne aussi en HTTP
+  simple, où l'API presse-papiers du navigateur est indisponible.
+- **Navigation entre sessions** : boutons ‹ › de l'en-tête et Alt+↑ / Alt+↓ dans l'ordre de la liste ; les boutons
+  précédent/suivant du navigateur (et le retour Android) parcourent les sessions visitées.
 - CLI : `avity search <projet> <texte>` et `avity export <session>`.
 - API : `PATCH` et `DELETE /api/sessions/:id`, `PUT /api/sessions/:id/draft`, `GET /api/sessions/:id/export`,
-  `GET /api/projects/:id/search?q=`.
+  `GET /api/projects/:id/search?q=`, `POST /api/sessions/:id/fork` (`before` : id du message où couper),
+  `POST /api/sessions/:id/edit` (`itemId`, `text`, `fork`), `POST /api/sessions/:id/regenerate` (`agent`).
+  Événement SSE `reset` (`fromId`) quand une conversation est coupée.
 - `ROADMAP.md` : feuille de route par domaine (agents et routage, plans, git et fusion, environnement de développement,
   mémoire, projets, sessions, multimodalité, notifications, mobile, administration, CLI).
 - `CHANGELOG.md`.
