@@ -121,7 +121,7 @@ const Row = memo(function Row({ it, live, latest, agents, act, busy = false, cop
     case 'user':
       return <UserMessage it={it} agents={agents} busy={busy} act={act} />;
     case 'assistant':
-      return <div className="msg-agent"><Markdown text={it.text} /></div>;
+      return <div className="msg-agent"><Markdown text={it.text ?? ''} />{it.content?.length > 0 && <Media blocks={it.content} />}</div>;
     case 'thought':
       return (
         <details className="thought">
@@ -217,6 +217,7 @@ function UserMessage({ it, agents, busy, act }: { it: Item; agents: Agent[]; bus
   return (
     <div className="msg-user">
       <div className="bubble">{it.text}</div>
+      {it.attachments?.length > 0 && <div className="attachments">{it.attachments.map((a: any) => <a key={a.id ?? a} className="chip" href={`/api/attachments/${encodeURIComponent(a.id ?? a)}`} download>{a.name ?? 'Pièce jointe'}</a>)}</div>}
       <div className="meta">
         <span className="msg-actions">
           <button className="chip xs icon" onClick={() => act.copy(it.text)} title="Copier le message" aria-label="Copier le message"><Icon name="copy" size={13} /></button>
@@ -413,3 +414,4 @@ function Empty({ project, agents, onSuggest }: { project: Project | null; agents
     </div>
   );
 }
+import { Media } from './Media';

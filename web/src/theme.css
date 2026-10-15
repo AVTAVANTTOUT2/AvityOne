@@ -367,3 +367,29 @@ mark { background: rgba(245, 177, 76, .22); color: var(--text); border-radius: 3
 @media (hover: none) { .mem .x, .md .copy { opacity: 1; } }
 @media (pointer: coarse) { .input, .select, .composer textarea { font-size: 16px; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+/* The workshop stays usable with keyboard navigation and narrow viewports. */
+.tool-dialog { background: var(--bg, #121212); color: var(--text, #ededed); border: 1px solid #444; border-radius: 16px; width: min(1180px, 95vw); max-height: 92dvh; padding: 20px; }
+.tool-dialog::backdrop { background: #000b; }
+.tool-dialog h2 { font-size: 20px; margin: 0; }
+.tool-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0; }
+.tool-stack { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.tool-stack label { display: flex; flex-direction: column; gap: 6px; }
+.tool-stack label:has(input[type=checkbox]) { display: block; }
+.tool-stack textarea.input { min-height: 80px; resize: vertical; }
+.tool-grid { display: grid; grid-template-columns: minmax(150px, 24%) 1fr; gap: 16px; }
+.file-tree { overflow: auto; max-height: 65dvh; }
+.file-entry { display: block; width: 100%; padding: 8px; text-align: left; color: inherit; background: transparent; border: 0; overflow-wrap: anywhere; cursor: pointer; }
+.file-entry:hover { background: #ffffff12; }
+.code-editor { width: 100%; min-height: 50dvh; resize: vertical; padding: 12px; color: inherit; background: #090909; border: 1px solid #444; border-radius: 8px; font: 13px/1.6 monospace; tab-size: 2; }
+.code-editor.short { min-height: 160px; }
+.terminal-output { white-space: pre-wrap; overflow-wrap: anywhere; background: #050505; padding: 14px; min-height: 220px; max-height: 55dvh; overflow: auto; }
+.task-editor { border: 1px solid #444; border-radius: 8px; display: flex; flex-direction: column; gap: 10px; padding: 14px; min-width: 0; }
+.tool-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 12px; align-items: center; }
+.wrap { flex-wrap: wrap; }
+.hunk-choice { margin: 10px 0; }
+.tool-dialog .ctx { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-dialog .input { width: 100%; }
+.attachments { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px; }
+.media-response img, .media-response video { max-width: 100%; max-height: 500px; }
+.media-response audio { max-width: 100%; }
+@media (max-width: 700px) { .tool-grid { grid-template-columns: 1fr; } .file-tree { max-height: 180px; } .tool-dialog { padding: 12px; } .task-editor .row { flex-wrap: wrap; } .planbar { flex-wrap: wrap; } .code-editor { min-height: 35dvh; } }

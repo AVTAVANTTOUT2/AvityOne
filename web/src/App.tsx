@@ -12,6 +12,9 @@ import { Panel } from './Panel';
 import { SessionMenu, TitleInput, type SessionActions } from './SessionMenu';
 import { Boundary, MetalSafe, Popover, Toaster, copyText, guard, toast } from './ui';
 import { canNotify, notifyOn, setNotify, systemNotify } from './notify';
+import { Workbench } from './Workbench';
+import { encodeFile } from './uploads';
+import { Administration } from './Administration';
 
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -92,8 +95,12 @@ function Workspace() {
   const [live, setLive] = useState<LiveState | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [draft, setDraft] = useState('');
+  const draftVersion = useRef(0), submissions = useRef(new Set<string>());
+  const [sendingTargets, setSendingTargets] = useState<string[]>([]);
   const [renaming, setRenaming] = useState(false);
   const [side, setSide] = useState(false);
+  const [workbench, setWorkbench] = useState(false);
+  const [administration, setAdministration] = useState(false);
   const [panel, setPanel] = useState(() => store.get('avity.panel') === '1' && innerWidth > 1100);
   const [acts, setActs] = useState<Record<string, Act>>({});
   const [link, setLink] = useState<Link>('ok');
@@ -128,6 +135,7 @@ function Workspace() {
     fetch(`/api/sessions/${d.id}/draft`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body, keepalive: body.length < 60_000 }).catch(() => {});
   }, []);
   const editDraft = useCallback((text: string) => {
+    draftVersion.current++;
     setDraft(text);
     if (!sid.current) return;
     unsaved.current = { id: sid.current, text };
@@ -213,9 +221,12 @@ function Workspace() {
 
   const openProject = useCallback(async (id: number, sessionId?: string) => {
     pid.current = id;
-    setProject(known.current.find((p) => p.id === id) ?? null);
+    let selected = known.current.find((p) => p.id === id);
+    if (!selected) { selected = await api<Project>(`/projects/${id}`); if (pid.current !== id) return; known.current = [...known.current, selected]; }
+    setProject(selected);
     store.set('avity.project', String(id));
     const rows = await loadSessions(id);
+    if (pid.current !== id) return;
     const target = sessionId ?? rows.find((r) => !r.archived)?.id;
     if (target) await openSession(target);
     else closeSession(id);
@@ -371,14 +382,30 @@ function Workspace() {
     }),
   }), [openSession, compose]);
   const dockAct: DockActions = useMemo(() => ({
-    send: async (text, agent, mode) => {
+    send: async (text, agent, mode, files = []) => {
+      const initialKey = sid.current ?? `project:${pid.current}`, version = draftVersion.current;
+      if (submissions.current.has(initialKey)) return false;
+      submissions.current.add(initialKey); setSendingTargets([...submissions.current]);
+      let target = sid.current;
       try {
         // A project without sessions is still ready to talk to: its first message opens one.
-        if (!sid.current && pid.current != null) await openSession((await api<SessionRow>(`/projects/${pid.current}/sessions`, {})).id);
-        await api(`/sessions/${S()}/prompt`, { text, agent, mode: mode || undefined });
-        stick.current = true; setAway(false);
+        const projectId = pid.current;
+        if (!target && projectId != null) {
+          target = (await api<SessionRow>(`/projects/${projectId}/sessions`, {})).id;
+          submissions.current.add(target); setSendingTargets([...submissions.current]);
+          if (pid.current === projectId && !sid.current) await openSession(target);
+        }
+        if (!target) throw new Error('Aucune session sélectionnée');
+        const attachments = [];
+        for (const file of files) attachments.push((await api(`/sessions/${target}/attachments`, { name: file.name, mime: file.type || 'application/octet-stream', base64: await encodeFile(file) })).id);
+        await api(`/sessions/${target}/prompt`, { text, agent, mode: mode || undefined, attachments });
+        if (sid.current === target) {
+          stick.current = true; setAway(false);
+          if (draftVersion.current === version) editDraft('');
+        }
         return true;
       } catch (e) { toast((e as Error).message, true); return false; }
+      finally { submissions.current.delete(initialKey); if (target) submissions.current.delete(target); setSendingTargets([...submissions.current]); }
     },
     stop: guard(() => api(`/sessions/${S()}/cancel`, {})),
     execute: guard((agent: string) => api(`/sessions/${S()}/execute`, { agent })),
@@ -392,7 +419,7 @@ function Workspace() {
     merge: guard(() => api(`/sessions/${S()}/merge`, {})),
     autoApprove: guard((on: boolean) => api(`/sessions/${S()}/auto-approve`, { on }).then(setLive)),
     isolated: guard((on: boolean) => api(`/sessions/${S()}/isolated`, { on }).then(setLive)),
-  }), [openSession]);
+  }), [openSession, editDraft]);
 
   const patch = async (b: { title?: string; pinned?: boolean; archived?: boolean }, id = S()) => {
     const row = await api<SessionRow & { project_id: number }>(`/sessions/${id}`, b, 'PATCH');
@@ -515,6 +542,8 @@ function Workspace() {
           </span>
           {live?.worktree && <button className="chip" onClick={dockAct.merge} disabled={live.busy} title="Merger le worktree"><Icon name="merge" size={14} /><span className="hide-mobile">Merger</span></button>}
           {row && <SessionMenu session={row} busy={!!live?.busy} act={sessionAct} />}
+          <button className="chip icon" disabled={!project} title="Atelier : fichiers, plans, Git et terminal" aria-label="Ouvrir l’atelier" onClick={() => setWorkbench(true)}><Icon name="folder" size={16} /></button>
+          <button className="chip icon" title="Administration" aria-label="Administration" onClick={() => setAdministration(true)}><Icon name="sliders" size={16} /></button>
           <button className={`chip icon hide-mobile ${notif ? 'on' : ''}`} onClick={toggleNotify} aria-pressed={notif} aria-label="Notifications"
             title={notif ? 'Notifications activées' : 'Être prévenu quand un agent termine, échoue ou attend ta validation'}><Icon name="bell" size={16} /></button>
           <button className={`chip icon ${panel ? 'on' : ''}`} title="Mémoire & contexte" aria-label="Mémoire et contexte" aria-pressed={panel}
@@ -533,10 +562,12 @@ function Workspace() {
           )}
         </div>
 
-        <Dock live={live} agents={agents} hasSession={!!session} ready={!!project} planReady={planReady} activity={busyInfo} draft={draft} setDraft={editDraft} inputRef={input} act={dockAct} />
+        <Dock key={session?.id ?? project?.id} live={live} agents={agents} hasSession={!!session} ready={!!project} planReady={planReady} activity={busyInfo} draft={draft} setDraft={editDraft} pending={sendingTargets.includes(session?.id ?? `project:${project?.id}`)} inputRef={input} act={dockAct} />
       </main>
 
       {panel && project && <Panel project={project} sessionId={session?.id ?? null} draft={draft} onClose={() => { setPanel(false); store.set('avity.panel', '0'); }} />}
+      {workbench && project && <Workbench project={project} sessionId={session?.id ?? null} onClose={() => setWorkbench(false)} />}
+      {administration && <Administration onClose={() => setAdministration(false)} />}
     </div>
   );
 }

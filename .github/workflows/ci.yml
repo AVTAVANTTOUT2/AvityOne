@@ -20,6 +20,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Outils d’extraction documentaire
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends poppler-utils unzip
       - run: npm run check
       - run: npm test
       - run: npm run build

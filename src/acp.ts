@@ -3,6 +3,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { config, type AgentDef } from './config.ts';
+import { assertBudget, recordExecution, recordUsage, redact } from './admin.ts';
 
 export type Json = any;
 export type Handlers = {
@@ -14,18 +15,31 @@ export type McpServer = { name: string; command: string; args: string[]; env: { 
 export type ModeOption = { id: string; name: string };
 
 export const READ_ONLY_KINDS = ['read', 'search', 'fetch', 'think'];
+let activePrompts = 0;
+const promptQueue: (() => void)[] = [];
+function promptSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const pump = () => { while (activePrompts < config.globalConcurrency && promptQueue.length) promptQueue.shift()!(); };
+    promptQueue.push(() => { activePrompts++; resolve(() => { activePrompts--; pump(); }); });
+    pump();
+  });
+}
 
 export class AcpConnection {
   proc: ChildProcess;
   stderr = '';
   caps: Json = {};
   alive = true;
+  traceSessionId: string | null = null;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
+  private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; reset: () => void }>();
   private h: Handlers;
+  private agentId: string;
+  private costs = new Map<string, number>();
 
   constructor(def: AgentDef, cwd: string, h: Handlers) {
     this.h = h;
+    this.agentId = Object.keys(config.agents).find((id) => config.agents[id] === def) ?? def.name;
     this.proc = spawn(def.cmd, def.args, { cwd, env: { ...process.env, ...def.env }, stdio: ['pipe', 'pipe', 'pipe'] });
     createInterface({ input: this.proc.stdout! }).on('line', (l) => this.onLine(l));
     this.proc.stderr!.on('data', (d) => { this.stderr = (this.stderr + d).slice(-8000); });
@@ -33,7 +47,7 @@ export class AcpConnection {
     const die = (code: number | null, err?: Error) => {
       if (!this.alive) return;
       this.alive = false;
-      const e = err ?? new Error(`${def.name} s'est arrêté (code ${code}). ${this.stderr.slice(-600)}`);
+      const e = err ?? new Error(`${def.name} s'est arrêté (code ${code}). ${redact(this.stderr.slice(-600))}`);
       for (const p of this.pending.values()) p.reject(e);
       this.pending.clear();
       h.onExit?.(code, this.stderr);
@@ -44,11 +58,35 @@ export class AcpConnection {
 
   private send(msg: Json) { if (this.alive) this.proc.stdin!.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n'); }
 
-  request(method: string, params: Json): Promise<Json> {
+  async request(method: string, params: Json): Promise<Json> {
+    const prompt = method === 'session/prompt';
+    const release = prompt ? await promptSlot() : () => {};
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      if (!this.alive) return reject(new Error('agent arrêté'));
-      this.pending.set(id, { resolve, reject });
+      if (!this.alive) { release(); return reject(new Error('agent arrêté')); }
+      if (prompt) { try { assertBudget(this.agentId); } catch (e) { release(); reject(e); return; } }
+      const started = performance.now(), initialCost = this.costs.get(params.sessionId);
+      let finished = false;
+      const finish = (result: Json, error?: Error) => {
+        if (finished) return;
+        finished = true; clearTimeout(pending.timer); this.pending.delete(id);
+        release();
+        if (prompt) {
+          const cost = this.costs.get(params.sessionId);
+          try {
+            recordExecution({ sessionId: this.traceSessionId ?? params.sessionId, agent: this.agentId,
+              status: error ? 'error' : result?.stopReason === 'cancelled' ? 'cancelled' : 'success', durationMs: performance.now() - started,
+              inputTokens: result?.usage?.inputTokens, outputTokens: result?.usage?.outputTokens,
+              costUsd: cost === undefined ? null : cost - (initialCost ?? 0), error: error?.message });
+          } catch { reject(new Error('impossible d’enregistrer les métriques de l’exécution')); return; }
+        }
+        if (error) reject(error); else resolve(result);
+      };
+      const timeout = () => { finish(null, new Error(`délai ACP dépassé : ${method}`)); this.kill(); };
+      const pending = { resolve: (result: Json) => finish(result), reject: (error: Error) => finish(null, error),
+        timer: setTimeout(timeout, prompt ? config.stallTimeoutMs : config.agentTimeoutMs),
+        reset: () => { if (prompt) { clearTimeout(pending.timer); pending.timer = setTimeout(timeout, config.stallTimeoutMs); } } };
+      this.pending.set(id, pending);
       this.send({ id, method, params });
     });
   }
@@ -58,6 +96,7 @@ export class AcpConnection {
   private async onLine(line: string) {
     let m: Json;
     try { m = JSON.parse(line); } catch { return; } // agents occasionally log to stdout
+    if (!m || typeof m !== 'object') return;
     if (m.id != null && m.method == null) {
       const p = this.pending.get(m.id);
       if (!p) return;
@@ -72,23 +111,47 @@ export class AcpConnection {
         this.send({ id: m.id, error: { code: e.code ?? -32603, message: String(e.message ?? e) } });
       }
     } else if (m.method === 'session/update') {
+      if (typeof m.params?.sessionId !== 'string' || !m.params.update || typeof m.params.update !== 'object') return;
+      for (const p of this.pending.values()) p.reset();
+      if (m.params.update?.sessionUpdate === 'usage_update') {
+        const delta = recordUsage(m.params.sessionId, this.agentId, m.params.update);
+        if (delta !== null) this.costs.set(m.params.sessionId, (this.costs.get(m.params.sessionId) ?? 0) + delta);
+      }
       this.h.onUpdate(m.params.sessionId, m.params.update);
     }
   }
 
-  kill() { this.alive = false; this.proc.kill(); }
+  kill() {
+    this.alive = false;
+    for (const p of this.pending.values()) p.reject(new Error('agent arrêté'));
+    this.pending.clear(); this.proc.kill();
+  }
 }
 
 export type AgentSession = {
   conn: AcpConnection; acpId: string; loaded: boolean;
   modes: ModeOption[]; modeId: string | null; modeConfigId: string | null; configOptions: Json[];
+  commands: { name: string; description: string; input?: { hint: string } }[];
 };
 
 /** Spawns an agent, initializes it and opens (or reloads) a session in `cwd`. */
-export async function openAgent(agentId: string, cwd: string, h: Handlers, mcpServers: McpServer[], resumeId?: string | null): Promise<AgentSession> {
+export async function openAgent(agentId: string, cwd: string, h: Handlers, mcpServers: McpServer[], resumeId?: string | null, signal?: AbortSignal): Promise<AgentSession> {
+  if (signal?.aborted) throw Object.assign(new Error('connexion annulée'), { name: 'AbortError' });
   const def = config.agents[agentId];
   if (!def) throw new Error(`agent inconnu: ${agentId}`);
-  const conn = new AcpConnection(def, cwd, h);
+  let session: AgentSession | undefined;
+  let commands: AgentSession['commands'] = [];
+  const conn = new AcpConnection(def, cwd, { ...h, onUpdate: (id, u) => {
+    if (u.sessionUpdate === 'available_commands_update' && Array.isArray(u.availableCommands)) {
+      commands = u.availableCommands.filter((c: Json) => typeof c?.name === 'string' && typeof c.description === 'string').map((c: Json) => ({ name: c.name, description: c.description, ...(typeof c.input?.hint === 'string' ? { input: { hint: c.input.hint } } : {}) }));
+      if (session) session.commands = commands;
+    }
+    h.onUpdate(id, u);
+  } });
+  const abort = () => conn.kill();
+  signal?.addEventListener('abort', abort, { once: true });
+  conn.proc.once('close', () => signal?.removeEventListener('abort', abort));
+  mcpServers = [...mcpServers, ...config.mcpServers.filter((s) => s.enabled && !mcpServers.some((existing) => existing.name === s.name)).map((s) => ({ name: s.name, command: s.command, args: s.args, env: Object.entries(s.env).map(([name, value]) => ({ name, value })) }))];
   try {
     conn.caps = await conn.request('initialize', {
       protocolVersion: 1,
@@ -103,7 +166,8 @@ export async function openAgent(agentId: string, cwd: string, h: Handlers, mcpSe
     }
     if (!loaded) res = await conn.request('session/new', { cwd, mcpServers });
     const acpId = loaded ? resumeId! : res.sessionId;
-    const s: AgentSession = { conn, acpId, loaded, modes: [], modeId: null, modeConfigId: null, configOptions: [] };
+    const s: AgentSession = { conn, acpId, loaded, modes: [], modeId: null, modeConfigId: null, configOptions: [], commands };
+    session = s;
     applySessionInfo(s, res);
     return s;
   } catch (e) { conn.kill(); throw e; }
@@ -155,7 +219,7 @@ export async function preferModel(s: AgentSession, hint?: string) {
  * Runs a single read-only prompt on a throwaway agent session and returns the agent's text
  * (used for summaries and cross-reviews). Only read-only tool calls are allowed.
  */
-export async function oneShot(agentId: string, cwd: string, prompt: string, opts: { model?: string; mcpServers?: McpServer[]; onText?: (t: string) => void } = {}): Promise<string> {
+export async function oneShot(agentId: string, cwd: string, prompt: string, opts: { model?: string; mcpServers?: McpServer[]; onText?: (t: string) => void; signal?: AbortSignal } = {}): Promise<string> {
   let text = '';
   const s = await openAgent(agentId, cwd, {
     onUpdate: (_, u) => {
@@ -166,7 +230,7 @@ export async function oneShot(agentId: string, cwd: string, prompt: string, opts
       const no = p.options.find((o: Json) => o.kind.startsWith('reject'));
       return { outcome: ok ? { outcome: 'selected', optionId: ok.optionId } : no ? { outcome: 'selected', optionId: no.optionId } : { outcome: 'cancelled' } };
     },
-  }, opts.mcpServers ?? []);
+  }, opts.mcpServers ?? [], undefined, opts.signal);
   try {
     await setMode(s, 'plan').catch(() => false);
     await preferModel(s, opts.model);

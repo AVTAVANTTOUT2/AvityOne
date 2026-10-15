@@ -7,6 +7,51 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Ajouté
 
+- **Administration des agents** : installation et connexion de Claude Code, Codex, Cursor et OpenCode depuis le
+  catalogue, vérification ACP de disponibilité, affichage des erreurs d'authentification, commandes natives et
+  autocomplétion. Les résultats absents ou non exposés restent inconnus.
+- **Routage configurable** : éditeur graphique des règles et de leur ordre, sélection par évaluations mesurées ou
+  par un agent LLM, bascule après échec de connexion avant l'envoi du travail. Configuration des serveurs MCP stdio
+  supplémentaires, dont Serena et Context7 lorsqu'ils sont installés sur l'hôte.
+- **Plans et orchestration durables** : édition de la spécification et des étapes, sélection/réorganisation,
+  dépendances validées, fichiers concernés et agent par tâche. File SQLite persistante, limitation du parallélisme
+  global, reprise des demandes en attente, relance explicite des tentatives interrompues ou échouées, résultats
+  structurés transmis aux successeurs, synthèse et artefacts persistants. Fermeture des connexions inactives,
+  interruption des agents bloqués et annulation des commandes de préparation.
+- **Validation et fusion** : préparation des dépendances des worktrees, exécution suivie des tests/lint/build,
+  revue croisée obligatoire avant fusion et suivi des remarques avec justification des corrections. Comparaison
+  et sélection de branches, fichiers ou blocs ; préparation du résultat dans un worktree temporaire et
+  intégration atomique après contrôle. Les conflits disposent d'une résolution assistée dans la sous-session.
+- **Outils du dépôt** : explorateur, éditeur avec contrôle de révision, terminal `/bin/sh` avec pipes, comparaison
+  globale, staging ou annulation par fichier/bloc et export du contexte textuel du dépôt avec exclusions explicites.
+- **Mémoire et documents** : recherche hybride FTS5/LSA locale bornée, indexation du code et des documents par
+  empreintes, consolidation automatique des doublons, édition et historique restaurable, export Markdown,
+  métadonnées de personnes/événements/faits et graphe temporel. Les valeurs structurées contradictoires et les
+  dates de validité dépassées sont signalées. Import PDF/DOCX/ODT/PPTX/XLSX, lecture du texte complet et
+  téléchargement de la source originale ; extraction avec `pdftotext` ou `unzip` selon le format.
+- **Contexte sélectionnable** : choix des connaissances et sources, édition du complément injecté à la prochaine
+  connexion d'agent ; les résumés et sources continuent de signaler leurs échecs de chargement.
+- **Gestion des projets** : recherche, renommage, archivage, retrait conservant les dossiers, sélecteur de dossiers
+  du serveur et édition du brief ainsi que des instructions `AGENTS.md`.
+- **Pièces jointes et multimodalité** : sélection ou glisser-déposer, jusqu'à huit fichiers de 5 Mio par demande,
+  images/audio/ressources ACP et affichage natif des réponses prises en charge. Conservation des pièces lors de
+  la modification, de la régénération et de la bifurcation ; contexte multimédia récent lors d'un changement d'agent.
+- **PWA et dictée** : manifest et service worker sans cache des données privées, interface mobile pour les options
+  et plans parallèles, six langues de dictée. Enregistrement et transcription par commande serveur configurée
+  lorsque le navigateur n'offre pas de reconnaissance native.
+- **Exploitation intégrée** : configuration globale validée, déconnexion, rotation du jeton et révocation des
+  accès, pilotage HTTPS Tailscale, sauvegarde SQLite et pièces jointes avec empreintes. Restauration contrôlée avec
+  copie de sécurité et maintenance jusqu'au redémarrage ; fichiers des projets et configuration exclus.
+  Traces d'exécution, tokens/coûts rapportés, budgets locaux et évaluations comparatives sur réponse attendue.
+- Quotas par agent via une commande fournisseur configurée et un JSON validé, avec délai, expiration et état
+  inconnu explicite. Un quota frais épuisé bloque les nouveaux prompts ; aucun quota n'est inventé sans source.
+- Provisionnement de `poppler-utils` et `unzip` pour les extractions PDF et bureautiques.
+- **CLI d'orchestration** : `plan` avec import JSON, `execute`, `parallel`, `queue`, `jobs`, `retry`, `artifacts`,
+  `isolate`, `preview`, `validate`, `review`, `conflicts` et `merge` avec sélection des branches/fichiers/blocs.
+- **Tests simulés supplémentaires** : reprise après arrêt d'un processus, concurrence et annulation, mutations
+  de commits pendant validation, contrôles bloquants, sélection de blocs, fichiers Unicode, métadonnées et
+  extractions documentaires, multimédia, administration et transcription. Les tests locaux restent distincts
+  des vérifications des agents réels, des appareils, de la CI distante et des environnements déployés.
 - **`AGENTS.md`** (importé par `CLAUDE.md`) : règles de code, workflow git, déploiement et pièges, pour tous les agents.
 - **CI/CD preprod → prod** : CI GitHub Actions (types, tests, build) sur les PR vers `preprod` et `main` ; chaque merge
   sur `preprod` redéploie la VM preprod, chaque merge `preprod` → `main` redéploie la prod (`deploy/autodeploy.sh`).
@@ -65,6 +110,13 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- Une fusion échouée ne laisse plus une sélection de branches partiellement intégrée : le résultat est préparé
+  isolément et les worktrees restent disponibles en cas de conflit, de contrôle échoué ou de revue défavorable.
+- Une commande de validation ou une revue ne peut plus changer silencieusement le commit validé puis faire
+  supprimer le travail source : les fichiers et SHA sont contrôlés avant l'intégration.
+- L'annulation pendant la préparation d'un worktree ou l'initialisation ACP arrête également les processus concernés.
+- Les noms accentués, les espaces et les caractères échappés sont reconnus dans la sélection des modifications Git.
+- Les pièces multimédias restent transmises après modification, régénération et bifurcation d'une conversation.
 - Un document illisible (droits, dossier nommé `*.md`…) faisait échouer toute l'indexation, et donc la création du
   projet : il est maintenant ignoré et signalé.
 - Les petits boutons icône (« + » des projets et des sessions, « Oublier » de la mémoire) n'affichaient qu'un point :
@@ -83,7 +135,10 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 ### Modifié
 
 - Le battement du flux SSE est un événement nommé `ping` (au lieu d'un commentaire), pour que la page puisse le voir.
-- README : la feuille de route renvoie vers `ROADMAP.md` et `CHANGELOG.md` ; le tableau des fonctions est daté v0.2.
+- README : fonctions de la version non publiée, commandes CLI, options par défaut, modules et limites opérationnelles.
+- La revue croisée est exécutée **avant** la fusion ; les validations et l'identité du résultat sont bloquantes.
+- La préparation npm des worktrees utilise `npm ci --ignore-scripts` lorsqu'un lockfile existe et que les dépendances
+  sont absentes ; les autres piles disposent de commandes configurables.
 - `docs/RESEARCH.md` : la légende 🔜 renvoie vers `ROADMAP.md`.
 
 ## [0.2.0] - 2026-10-14

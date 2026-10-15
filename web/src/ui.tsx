@@ -192,11 +192,11 @@ export function Toaster() {
     window.addEventListener('avity:toast', on);
     return () => window.removeEventListener('avity:toast', on);
   }, []);
-  return t ? (
+  return t ? createPortal(
     <div className={`toast ${t.bad ? 'bad' : ''}`} role="status">
       {t.msg}
       {t.action && <button className="toast-act" onClick={() => { setT(null); t.action!.onClick(); }}>{t.action.label}</button>}
-    </div>
+    </div>, [...document.querySelectorAll('dialog[open]')].at(-1) ?? document.body
   ) : null;
 }
 

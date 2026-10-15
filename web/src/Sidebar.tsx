@@ -6,6 +6,7 @@ import { api, hoursSince, rel, signalOf, SIGNAL_RANK, SIGNAL_TITLE, type Act, ty
 import { AgentAvatar, LogoMark, coverUrl } from './brand';
 import { Icon } from './icons';
 import { MetalSafe, guard, toast } from './ui';
+import { FolderPicker } from './Workbench';
 
 /** Activity dot: waiting for you (amber), working (pulsing), failed or finished and not seen yet (red, green). */
 const Dot = ({ s }: { s: Signal | null }) => (s ? <span className={`act ${s}`} title={SIGNAL_TITLE[s]} aria-label={SIGNAL_TITLE[s]} role="img" /> : null);
@@ -16,6 +17,8 @@ export function Sidebar({ open, projects, project, sessions, sessionId, live, ag
   onProject: (id: number) => void; onSession: (id: string, itemId?: number) => void; onNewSession: () => void; onCreated: (p: Project) => void; onClose: () => void;
 }) {
   const [dialog, setDialog] = useState(false);
+  const [projectQuery, setProjectQuery] = useState(''), [showArchived, setShowArchived] = useState(false), [archivedProjects, setArchivedProjects] = useState<Project[]>([]);
+  useEffect(() => { if (showArchived) api('/projects?archived=true').then(setArchivedProjects).catch(e => toast(e.message, true)); }, [showArchived]);
   const [searching, setSearching] = useState(false);
   const [q, setQ] = useState('');
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -65,13 +68,16 @@ export function Sidebar({ open, projects, project, sessions, sessionId, live, ag
       </div>
 
       <div className="section"><span>Projets</span><button className="chip icon sm" style={{ width: 24, height: 24 }} onClick={() => setDialog(true)} aria-label="Nouveau projet" title="Nouveau projet"><Icon name="plus" size={14} /></button></div>
+      <input className="input" type="search" aria-label="Rechercher un projet" placeholder="Filtrer les projets…" value={projectQuery} onChange={e => setProjectQuery(e.target.value)} />
+      <label className="muted"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> Projets archivés</label>
       <div className="list" style={{ maxHeight: '30vh' }}>
-        {projects.map((p) => (
-          <button key={p.id} className={`row-item ${p.id === project?.id ? 'on' : ''}`} title={p.path} onClick={() => onProject(p.id)}>
+        {(showArchived ? archivedProjects : projects).filter(p => p.name.toLocaleLowerCase().includes(projectQuery.toLocaleLowerCase())).map((p) => (
+          <div key={p.id} className="row"><button className={`row-item grow ${p.id === project?.id ? 'on' : ''}`} title={p.path} onClick={() => onProject(p.id)}>
             <img className="cover-thumb" src={coverUrl(p.name, 64)} alt="" />
             <span className="grow ellipsis">{p.name}</span>
             <Dot s={projectSignal(p.id)} />
           </button>
+          {showArchived && <button className="chip" aria-label={`Restaurer ${p.name}`} onClick={guard(async () => { await api(`/projects/${p.id}`, { archived: false }, 'PATCH'); location.reload(); })}>Restaurer</button>}</div>
         ))}
       </div>
 
@@ -145,6 +151,7 @@ function Snippet({ text }: { text: string }) {
 
 function ProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Project) => void }) {
   const [err, setErr] = useState('');
+  const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
@@ -167,7 +174,8 @@ function ProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
         <form onSubmit={submit}>
           <h3 id="pd-title">Nouveau projet</h3>
           <input className="input" name="name" placeholder="Nom (ex. avity-site)" pattern="[\w.\-]{1,64}" required autoFocus />
-          <input className="input" name="path" placeholder="Chemin absolu d'un dossier existant (optionnel)" />
+          <input className="input" name="path" placeholder="Chemin absolu d'un dossier existant (optionnel)" value={path} onChange={e => setPath(e.target.value)} />
+          <FolderPicker onPick={setPath} />
           <input className="input" name="git" placeholder="Ou URL git à cloner (optionnel)" />
           <p className="muted" style={{ margin: 0, fontSize: 12 }}>Sans chemin ni URL, un dossier vide est créé dans ~/projects. Parfait aussi pour un projet « vie » : notes, admin, idées.</p>
           <div className="err">{err}</div>

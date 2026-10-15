@@ -5,13 +5,14 @@
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { config } from './config.ts';
+import { readFileSync } from 'node:fs';
 
 const BASE = process.env.AVITY_URL ?? `http://127.0.0.1:${config.port}`;
 const TOKEN = process.env.AVITY_TOKEN ?? config.token;
 
-async function api(path: string, body?: object) {
+async function api(path: string, body?: object, method = body ? 'POST' : 'GET') {
   const r = await fetch(BASE + '/api' + path, {
-    method: body ? 'POST' : 'GET',
+    method,
     headers: { authorization: `Bearer ${TOKEN}`, ...(body ? { 'content-type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -61,7 +62,8 @@ async function ask(text: string, o: { agent?: string; plan?: boolean; project?: 
 
 const { values: o, positionals: [cmd, ...rest] } = parseArgs({
   allowPositionals: true,
-  options: { agent: { type: 'string', short: 'a' }, plan: { type: 'boolean' }, project: { type: 'string', short: 'p' }, session: { type: 'string', short: 's' } },
+  options: { agent: { type: 'string', short: 'a' }, plan: { type: 'boolean' }, project: { type: 'string', short: 'p' }, session: { type: 'string', short: 's' },
+    file: { type: 'string' }, branches: { type: 'string' }, files: { type: 'string' }, hunks: { type: 'string' }, fingerprint: { type: 'string' } },
 });
 
 try {
@@ -77,5 +79,19 @@ try {
       console.log(`${h.session_id}\t${h.title ?? ''}\t${h.hits} résultat(s)\n  ${h.snippet.replace(/\s+/g, ' ').replace(/\u0002/g, '\x1b[1m').replace(/\u0003/g, '\x1b[0m')}`);
     }
   } else if (cmd === 'export' && rest[0]) process.stdout.write((await api(`/sessions/${rest[0]}/export`)).markdown);
-  else console.log('usage: avity ask [-a agent] [--plan] [-p projet] [-s session] "demande" | projects | sessions [projet] | memory [projet] [recherche] | search <projet> <texte> | export <session>');
+  else if (cmd === 'plan' && rest[0]) {
+    const body = o.file ? JSON.parse(readFileSync(o.file, 'utf8')) : undefined;
+    console.log(JSON.stringify(await api(`/sessions/${rest[0]}/plan`, body, body ? 'PUT' : 'GET'), null, 2));
+  } else if (cmd === 'retry' && rest[0]) console.log(JSON.stringify(await api(`/jobs/${Number(rest[0])}/retry`, {}), null, 2));
+  else if (['execute', 'parallel', 'review', 'validate', 'conflicts', 'isolate', 'merge', 'preview', 'jobs', 'artifacts'].includes(cmd ?? '') && rest[0]) {
+    const action = cmd === 'isolate' ? 'isolated' : cmd === 'preview' ? 'merge-preview' : cmd;
+    const read = ['preview', 'jobs', 'artifacts'].includes(cmd!);
+    const body = read ? undefined : cmd === 'merge' ? {
+      branches: o.branches?.split(','), files: o.files?.split(','), hunks: o.hunks?.split(','), fingerprint: o.fingerprint,
+    } : { agent: o.agent, on: true };
+    console.log(JSON.stringify(await api(`/sessions/${rest[0]}/${action}`, body), null, 2));
+  } else if (cmd === 'queue' && rest.length > 1) console.log(JSON.stringify(await api(`/sessions/${rest[0]}/queue`, { text: rest.slice(1).join(' '), agent: o.agent, mode: o.plan ? 'plan' : 'agent' }), null, 2));
+  else console.log('usage: avity ask [-a agent] [--plan] [-p projet] [-s session] "demande" | projects | sessions [projet] | memory [projet] [recherche] | search <projet> <texte> | export <session>\n' +
+    'Plans : plan <session> [--file plan.json] | execute <session> [-a agent] | parallel <session> | queue <session> "demande" | jobs <session> | retry <job> | artifacts <session>\n' +
+    'Git : isolate <session> | preview <session> | validate <session> | review <session> [-a agent] | conflicts <session> | merge <session> [--branches id,id] [--files chemin,chemin] [--hunks id,id] [--fingerprint sha]');
 } catch (e: any) { console.error('erreur:', e.message); process.exit(1); }

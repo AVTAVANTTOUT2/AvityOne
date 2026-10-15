@@ -1,7 +1,8 @@
 // Stdio MCP server injected into every agent session: one shared project brain for Claude, Codex, Cursor and OpenCode.
 // Usage: node src/mcp.ts <projectId>   (AVITY_DB points at the AvityOne database)
 import { createInterface } from 'node:readline';
-import { all, searchMemory, searchKb, addMemory } from './store.ts';
+import { all, one, searchMemory, searchKb, addMemory } from './store.ts';
+import { indexKnowledge, knowledgeHistory, readSource, updateKnowledge } from './knowledge.ts';
 
 const projectId = Number(process.argv[2]);
 
@@ -21,6 +22,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'avity_knowledge_edit',
+    description: 'Modifie une connaissance existante du projet en conservant son historique. Les dates sont ISO ; sujet, prédicat et objet rendent les contradictions vérifiables.',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' }, text: { type: 'string' }, subject: { type: 'string' }, predicate: { type: 'string' }, object: { type: 'string' }, validUntil: { type: 'string' } }, required: ['id'] },
+  },
+  {
+    name: 'avity_knowledge_history', description: 'Lit les versions précédentes d’une connaissance du projet.',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
+  },
+  {
+    name: 'avity_source_read', description: 'Lit le texte complet d’un document indexé appartenant à ce projet.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  },
+  {
     name: 'avity_recent_sessions',
     description: 'Résumés des sessions de travail récentes sur ce projet (tous agents confondus).',
     inputSchema: { type: 'object', properties: { limit: { type: 'number' } } },
@@ -29,11 +43,16 @@ const TOOLS = [
 
 function call(name: string, a: any): string {
   if (name === 'avity_memory_search') {
+    const p = one('SELECT * FROM projects WHERE id = ?', projectId);
+    if (p) indexKnowledge(p);
     const k = Math.min(Number(a.limit) || 8, 30);
-    const mem = searchMemory(projectId, String(a.query ?? ''), k).map((m) => `- [${m.kind}] ${m.text}`);
+    const mem = searchMemory(projectId, String(a.query ?? ''), k).map((m) => `- #${m.id} [${m.kind}] ${m.text}`);
     const kb = searchKb(projectId, String(a.query ?? ''), Math.ceil(k / 2)).map((d) => `### ${d.path}\n${d.text}`);
     return [mem.length ? `## Mémoire\n${mem.join('\n')}` : '', kb.length ? `## Docs\n${kb.join('\n\n')}` : ''].filter(Boolean).join('\n\n') || 'Aucun résultat.';
   }
+  if (name === 'avity_knowledge_edit') return JSON.stringify(updateKnowledge(projectId, Number(a.id), a));
+  if (name === 'avity_knowledge_history') return JSON.stringify(knowledgeHistory(projectId, Number(a.id)));
+  if (name === 'avity_source_read') return readSource(projectId, String(a.path ?? '')).text;
   if (name === 'avity_memory_add') {
     const text = String(a.text ?? '').slice(0, 1000);
     return addMemory(projectId, String(a.kind ?? 'fact'), text, null) ? 'Mémorisé.' : 'Déjà connu (ou vide).';

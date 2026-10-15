@@ -1,25 +1,17 @@
 // Context engine: per-project knowledge base, git state, memory recall, context packs and session summaries.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { all, one, run, db, searchMemory, searchKb, addMemory, DB_PATH, type Row } from './store.ts';
+import { all, one, run, searchMemory, searchKb, addMemory, DB_PATH, type Row } from './store.ts';
 import { config } from './config.ts';
 import { oneShot, type McpServer } from './acp.ts';
-
-const DOC_EXT = /\.(md|mdx|markdown|txt|rst|adoc)$/i;
-const SKIP_DIR = /(^|\/)(node_modules|\.git|dist|build|vendor|\.venv|venv|target|\.next|coverage)(\/|$)/;
-const MAX_FILES = 2000;
+import { consolidateKnowledge, getContextSelection, indexKnowledge, readSource } from './knowledge.ts';
+import { projectPath } from './projects.ts';
 
 const git = (cwd: string, args: string[]) => {
   try { return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 20 << 20 }); } catch { return ''; }
 };
-
-function listDocs(root: string): string[] {
-  const tracked = git(root, ['ls-files', '-co', '--exclude-standard']);
-  const files = tracked ? tracked.split('\n') : readdirSync(root, { recursive: true }) as string[];
-  return files.filter((f) => f && DOC_EXT.test(f) && !SKIP_DIR.test(f)).slice(0, MAX_FILES);
-}
 
 /** Splits markdown on headings, then caps chunk size so each FTS hit stays prompt-sized. */
 export function chunk(text: string, max = 1500): string[] {
@@ -34,29 +26,7 @@ export function chunk(text: string, max = 1500): string[] {
  * (Re)indexes a project's docs (README, docs/, AGENTS.md, .serena/memories, notes…) into the FTS knowledge base.
  * A file that can't be read is skipped and listed in `failed` instead of failing the whole index.
  */
-export function indexProject(p: Row): { chunks: number; failed: string[] } {
-  const failed: string[] = [];
-  if (!existsSync(p.path)) return { chunks: 0, failed };
-  const files = new Set(listDocs(p.path));
-  const serena = join(p.path, '.serena/memories');
-  if (existsSync(serena)) for (const f of readdirSync(serena)) files.add(relative(p.path, join(serena, f)));
-  let n = 0;
-  db.exec('BEGIN');
-  try {
-    run('DELETE FROM kb WHERE project_id = ?', p.id);
-    for (const f of files) {
-      const abs = join(p.path, f);
-      let text: string;
-      try {
-        if (statSync(abs).size > 300_000) continue;
-        text = readFileSync(abs, 'utf8');
-      } catch { failed.push(f); continue; }
-      for (const c of chunk(text)) { run('INSERT INTO kb (text, path, project_id) VALUES (?, ?, ?)', c, f, p.id); n++; }
-    }
-    db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
-  return { chunks: n, failed };
-}
+export const indexProject = indexKnowledge;
 
 export function gitState(cwd: string): string {
   const branch = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
@@ -100,17 +70,23 @@ export function buildPack(p: Row, sessionId: string, prompt: string, handoff = '
     try { return fn(); } catch (e: any) { warnings.push(`${what} (${String(e.message ?? e).slice(0, 200)})`); return fallback; }
   };
   if (!existsSync(cwd)) warnings.push(`dossier de travail introuvable (${cwd})`);
+  const selection = getContextSelection(sessionId);
+  load('réindexation indisponible', () => indexProject(p), null);
   if (cwd !== p.path) parts.push(`## Worktree isolé\nTu travailles dans ${cwd}, un worktree git sur sa propre branche. Ne modifie rien en dehors : AvityOne mergera ta branche.`);
-  const brief = load('brief illisible', () => readOptional(join(p.path, '.avity/brief.md')), '').trim();
+  const brief = selection.includeBrief === false ? '' : load('brief illisible', () => readOptional(projectPath(p.id, '.avity/brief.md')), '').trim();
   if (brief) parts.push(`## Brief projet\n${brief.slice(0, 3000)}`);
-  const gs = gitState(cwd); // a project that isn't a git repository is normal, not an error
+  const instructions = selection.includeInstructions === false ? '' : load('instructions illisibles', () => readOptional(projectPath(p.id, 'AGENTS.md')), '').trim();
+  if (instructions) parts.push(`## Instructions projet\n${instructions.slice(0, 12_000)}`);
+  const gs = selection.includeGit === false ? '' : gitState(cwd); // a project that isn't a git repository is normal, not an error
   if (gs) parts.push(`## État git\n${gs}`);
-  const mems = load('mémoire du projet indisponible', () => searchMemory(p.id, prompt, 10), []);
+  const mems = load('mémoire du projet indisponible', () => selection.memoryIds == null ? searchMemory(p.id, prompt, 10) :
+    selection.memoryIds.map((id) => one('SELECT rowid AS id, kind, text FROM memory WHERE rowid = ? AND project_id = ?', id, p.id)).filter((m): m is Row => !!m), []);
   if (mems.length) parts.push(`## Mémoire projet pertinente\n${mems.map((m) => `- [${m.kind}] ${m.text}`).join('\n')}`);
-  const docs = load('base de connaissance indisponible', () => searchKb(p.id, prompt, 4), []);
+  const docs = load('base de connaissance indisponible', () => selection.paths == null ? searchKb(p.id, prompt, 4) : selection.paths.map((path) => readSource(p.id, path)), []);
   if (docs.length) parts.push(`## Extraits de la base de connaissance\n${docs.map((d) => `### ${d.path}\n${d.text.slice(0, 1200)}`).join('\n\n')}`);
-  const recent = load('sessions récentes indisponibles', () => all(`SELECT title, summary FROM sessions WHERE project_id = ? AND id <> ? AND summary IS NOT NULL ORDER BY updated_at DESC LIMIT 3`, p.id, sessionId), []);
+  const recent = selection.includeRecent === false ? [] : load('sessions récentes indisponibles', () => all(`SELECT title, summary FROM sessions WHERE project_id = ? AND id <> ? AND summary IS NOT NULL ORDER BY updated_at DESC LIMIT 3`, p.id, sessionId), []);
   if (recent.length) parts.push(`## Sessions récentes\n${recent.map((r) => `- ${r.title ?? 'session'} : ${r.summary}`).join('\n')}`);
+  if (selection.custom?.trim()) parts.push(`## Contexte personnalisé\n${selection.custom}`);
   if (handoff) parts.push(`## Reprise : conversation précédente de cette session (avec toi ou un autre agent)\n${handoff}`);
   const text = `<avity-context>
 Contexte fourni par AvityOne, l'orchestrateur qui te pilote. Le serveur MCP "avity" te donne avity_memory_search
@@ -185,6 +161,7 @@ ${t}
     const kinds = ['decision', 'convention', 'pitfall', 'fact', 'todo'];
     let added = 0;
     for (const m of parsed.memories ?? []) if (typeof m?.text === 'string' && addMemory(s.project_id, kinds.includes(m.kind) ? m.kind : 'fact', m.text, sessionId)) added++;
+    consolidateKnowledge(s.project_id);
     run(`UPDATE sessions SET summary = ?, title = CASE WHEN renamed = 1 THEN title ELSE COALESCE(?, title) END, summarized_turns = ? WHERE id = ?`,
       String(parsed.summary ?? '').slice(0, 2000), parsed.title ?? null, s.turns, sessionId);
     return { summary: parsed.summary, title: parsed.title, added };
