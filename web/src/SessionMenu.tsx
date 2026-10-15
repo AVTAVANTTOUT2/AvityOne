@@ -1,4 +1,4 @@
-// Session header controls: in-place rename and the « ⋯ » menu (pin, export, archive, delete).
+// Session header controls: in-place rename and the « ⋯ » menu (pin, duplicate, export, archive, delete).
 import { useRef, useState } from 'react';
 import type { SessionRow } from './api';
 import { Icon } from './icons';
@@ -7,6 +7,7 @@ import { Popover } from './ui';
 export type SessionActions = {
   rename: () => void;
   pin: (on: boolean) => void;
+  duplicate: () => void;
   archive: (on: boolean) => void;
   exportMd: () => void;
   remove: () => void;
@@ -53,6 +54,7 @@ function Items({ session, busy, act, close }: { session: SessionRow; busy: boole
       <button role="menuitem" onClick={run(() => act.pin(!session.pinned))} disabled={!!session.archived}>
         <Icon name="pin" size={15} />{session.pinned ? 'Désépingler' : 'Épingler'}
       </button>
+      <button role="menuitem" onClick={run(act.duplicate)} disabled={busy}><Icon name="branch" size={15} />Dupliquer</button>
       <button role="menuitem" onClick={run(act.exportMd)}><Icon name="download" size={15} />Exporter en Markdown</button>
       <button role="menuitem" onClick={run(() => act.archive(!session.archived))}>
         <Icon name="archive" size={15} />{session.archived ? 'Désarchiver' : 'Archiver'}
