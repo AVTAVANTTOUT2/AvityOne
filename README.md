@@ -75,7 +75,7 @@ Le token d'accès à l'UI se lit avec `jq -r .token ~/.avityone/config.json`.
    divergent). La CI refuse toute autre source pour `main`, la prod est donc exactement ce qui a tourné en preprod.
 
 Chaque VM interroge GitHub chaque minute (`avityone-deploy.timer` → `deploy/autodeploy.sh <branche>`) : pas de
-secret, pas de port ouvert. Activation sur une VM : `bash deploy/install.sh preprod` (ou `main`).
+secret, pas de port ouvert. Activation sur une VM : `bash deploy/autodeploy.sh preprod` (ou `main`).
 Suivi : `journalctl -u avityone-deploy -f`. Redéployer le même commit : `rm ~/.avityone/deployed`.
 
 ## Utilisation

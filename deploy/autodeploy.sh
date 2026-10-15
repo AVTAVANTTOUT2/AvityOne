@@ -6,6 +6,8 @@ set -euo pipefail
 BRANCH="${1:?usage: autodeploy.sh <branch>}"
 cd "$(dirname "$0")/.."
 STATE="${AVITY_HOME:-$HOME/.avityone}/deployed"
+mkdir -p "$(dirname "$STATE")"
+exec 9>"$STATE.lock" && flock 9   # one deploy at a time (timer vs manual run)
 
 git fetch -q origin "$BRANCH"
 TARGET="$(git rev-parse FETCH_HEAD)"
@@ -15,6 +17,6 @@ echo "Déploiement de $BRANCH @ ${TARGET:0:7}"
 git checkout -qf -B "$BRANCH" "$TARGET"
 bash deploy/install.sh "$BRANCH"
 # Written only after a successful install: a failed deploy is retried on the next tick.
-mkdir -p "$(dirname "$STATE")" && echo "$TARGET" > "$STATE"
+echo "$TARGET" > "$STATE"
 exit
 }
