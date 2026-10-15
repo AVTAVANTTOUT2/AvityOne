@@ -57,7 +57,8 @@ export function Feed({ items, live, project, agents, act, onSuggest }: {
         const latest = i > lastUser;
         const showHead = it.type === 'assistant' && !headShown;
         if (it.type === 'assistant') headShown = true;
-        return <Row key={it.id} it={it} head={showHead} live={latest && !!live?.busy} latest={latest} agents={agents} act={act} />;
+        // data-item lets a history-search hit scroll to its message.
+        return <div key={it.id} className="feed-item" data-item={it.id}><Row it={it} head={showHead} live={latest && !!live?.busy} latest={latest} agents={agents} act={act} /></div>;
       })}
     </div>
   );

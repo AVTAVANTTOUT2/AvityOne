@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, isAbsolute, relative } from 'node:path';
-import { all, one, run, type Row } from './store.ts';
+import { all, one, run, db, type Row } from './store.ts';
 import { config, availableAgents } from './config.ts';
 import { route, type Forced, type Mode } from './router.ts';
 import { openAgent, setMode, setConfigOption, applySessionInfo, oneShot, READ_ONLY_KINDS, type AgentSession, type Json } from './acp.ts';
@@ -148,6 +148,48 @@ export class Hub {
     for (const s of all('SELECT id FROM sessions WHERE project_id = ? AND id <> ? AND turns > summarized_turns ORDER BY updated_at DESC LIMIT 3', projectId, id)) this.summarizeBg(s.id);
     this.emit({ type: 'sessions', projectId });
     return one('SELECT * FROM sessions WHERE id = ?', id)!;
+  }
+
+  /** Pinned first, archived last (the UI folds them), most recent first within each group. */
+  listSessions(projectId: number) {
+    return all(`SELECT id, title, agent, mode, turns, summary, parent_id, pinned, archived, updated_at FROM sessions
+      WHERE project_id = ? ORDER BY archived, pinned DESC, updated_at DESC LIMIT 300`, projectId);
+  }
+
+  /** Rename, pin, archive. Leaves `updated_at` alone so the list doesn't reshuffle under the user. */
+  updateSession(id: string, b: Row) {
+    const s = one('SELECT project_id FROM sessions WHERE id = ?', id);
+    if (!s) throw httpError(404, 'session inconnue');
+    if (b.title !== undefined) {
+      const title = String(b.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      // An emptied title goes back to automatic naming (first message, then summaries).
+      run('UPDATE sessions SET title = ?, renamed = ? WHERE id = ?', title || null, title ? 1 : 0, id);
+    }
+    for (const k of ['pinned', 'archived'] as const) if (b[k] !== undefined) run(`UPDATE sessions SET ${k} = ? WHERE id = ?`, b[k] ? 1 : 0, id);
+    this.emit({ type: 'sessions', projectId: s.project_id });
+    return one('SELECT * FROM sessions WHERE id = ?', id)!;
+  }
+
+  setDraft(id: string, text: string) {
+    if (!run('UPDATE sessions SET draft = ? WHERE id = ?', text.slice(0, 100_000) || null, id).changes) throw httpError(404, 'session inconnue');
+    return { ok: true };
+  }
+
+  /** Deletes a session with its parallel sub-sessions. Unmerged worktrees are never thrown away. */
+  deleteSession(id: string) {
+    const s = one('SELECT project_id FROM sessions WHERE id = ?', id);
+    if (!s) throw httpError(404, 'session inconnue');
+    const targets = [id, ...all('SELECT id FROM sessions WHERE parent_id = ?', id).map((r) => r.id as string)].map((x) => this.get(x));
+    if (targets.some((L) => L.busy)) throw httpError(409, 'session occupée : arrête-la avant de la supprimer');
+    if (targets.some((L) => L.worktree)) throw httpError(409, 'worktree non mergé : merge-le d\'abord, ou archive la session pour la garder de côté');
+    for (const L of targets) { this.drop(L); this.live.delete(L.id); }
+    db.exec('BEGIN');
+    try {
+      for (const L of targets) { run('DELETE FROM items WHERE session_id = ?', L.id); run('DELETE FROM sessions WHERE id = ?', L.id); }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    this.emit({ type: 'sessions', projectId: s.project_id });
+    return { deleted: targets.length };
   }
 
   // ---------- agent connections ----------
