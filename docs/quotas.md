@@ -1,7 +1,7 @@
 # Sources de quotas des agents
 
 Les sources livrées interrogent le compte connecté ou le contexte anonyme vérifiable sur le serveur. Elles ne
-lancent aucun prompt, n’installent rien et ne changent pas la configuration
+lancent aucun prompt et ne changent pas la configuration
 d’AvityOne. Node 24 et le CLI correspondant doivent être disponibles pour
 l’utilisateur du service.
 
@@ -64,6 +64,8 @@ autre fournisseur reste inconnu. Les paramètres propres aux projets et aux
 sessions ne sont pas couverts par cette mesure globale. Les statistiques locales
 de tokens ne sont jamais transformées en solde. Big Pickle est gratuit
 temporairement, avec des limitations possibles : cela ne signifie pas illimité.
+Le serveur CLI auxiliaire utilise un HOME et des répertoires XDG temporaires,
+supprimés après la mesure ; ses fichiers de fonctionnement restent dans cet espace.
 
 Codex utilise son authentification native, notamment `CODEX_HOME` si défini.
 Son CLI doit être présent dans le `PATH` du service. Le processus auxiliaire et
@@ -97,10 +99,10 @@ Ces informations sont conservées sans inventer de nombre ni bloquer les prompts
 Un accès gratuit n'est pas une capacité illimitée.
 
 Les réponses manquantes, périmées, mal formées ou trop grandes, les erreurs
-d’authentification/réseau et le dépassement du délai font échouer la commande.
-AvityOne conserve alors le statut **inconnu**, sans inventer de valeur. Le CLI
-émet sur stderr un motif borné et fixe, sans réponse brute ni identifiant ; le
-runner d’AvityOne affiche son erreur générique de commande. Aucune requête HTTP
+d’authentification/réseau et le dépassement du délai donnent le statut **inconnu**.
+Cursor et OpenCode retournent un motif JSON expurgé ; les sources Codex et Claude
+échouent avec un motif fixe sur stderr, affiché comme erreur générique de commande
+par le runner. Aucune réponse brute ni identifiant n'est conservé. Aucune requête HTTP
 Claude n’accepte de redirection. Si le forfait est épuisé mais que le fournisseur
 annonce des crédits supplémentaires, le solde global reste également inconnu :
 la source ne bloque pas à tort l’utilisation de ces crédits.
@@ -108,6 +110,8 @@ la source ne bloque pas à tort l’utilisation de ces crédits.
 Le runner d’AvityOne limite chaque mesure à cinq secondes par défaut ;
 `quota.timeoutMs` accepte un entier de 1 000 à 30 000 ms. OpenCode utilise ici
 20 secondes pour laisser son CLI résoudre le modèle dans un environnement temporaire.
+Le runner transmet son délai via `AVITY_QUOTA_TIMEOUT_MS` ; OpenCode réserve
+500 ms à son nettoyage et termine au plus tard après 18 secondes de travail.
 Les autres adaptateurs ont une limite interne de 4,2 secondes. Le serveur invalide les
 snapshots après cinq minutes ou à leur remise à zéro. Une vérification manuelle
 suffit ; éviter d’interroger le fournisseur en boucle, notamment après un 429.
@@ -121,8 +125,12 @@ suffit ; éviter d’interroger le fournisseur en boucle, notamment après un 42
 - [Commandes du CLI OpenCode](https://opencode.ai/docs/cli/).
 - [OpenCode Zen : modèles gratuits et facturation](https://docs.opencode.ai/docs/zen/).
 
-La lecture réelle a été vérifiée en préproduction avec Codex CLI 0.162.1 et
-Claude Code 2.1.300. Les tests automatisés utilisent uniquement des réponses
+La lecture réelle a été vérifiée en préproduction avec Codex CLI 0.162.1,
+Claude Code 2.1.300, Cursor 2026.10.14-0f9edde et OpenCode 1.19.0. Cursor expose
+les deux réserves mensuelles sur ce compte ; le format hebdomadaire est couvert
+par les fixtures. OpenCode a confirmé le modèle global anonyme Big Pickle et
+son tarif catalogue nul, sans quota chiffré publié.
+Les tests automatisés utilisent uniquement des réponses
 simulées, des fichiers temporaires et un faux processus CLI. Aucun secret ou
 identifiant de compte ne figure dans les fixtures.
 
