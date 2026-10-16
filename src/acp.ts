@@ -36,6 +36,7 @@ export class AcpConnection {
   private h: Handlers;
   private agentId: string;
   private costs = new Map<string, number>();
+  private permissions = 0;
 
   constructor(def: AgentDef, cwd: string, h: Handlers) {
     this.h = h;
@@ -85,8 +86,13 @@ export class AcpConnection {
       const timeout = () => { finish(null, new Error(`délai ACP dépassé : ${method}`)); this.kill(); };
       const pending = { resolve: (result: Json) => finish(result), reject: (error: Error) => finish(null, error),
         timer: setTimeout(timeout, prompt ? config.stallTimeoutMs : config.agentTimeoutMs),
-        reset: () => { if (prompt) { clearTimeout(pending.timer); pending.timer = setTimeout(timeout, config.stallTimeoutMs); } } };
+        reset: () => {
+          if (!prompt) return;
+          clearTimeout(pending.timer);
+          if (!this.permissions) pending.timer = setTimeout(timeout, config.stallTimeoutMs);
+        } };
       this.pending.set(id, pending);
+      if (prompt && this.permissions) pending.reset();
       this.send({ id, method, params });
     });
   }
@@ -106,7 +112,13 @@ export class AcpConnection {
     } else if (m.method && m.id != null) {
       try {
         if (m.method !== 'session/request_permission') throw Object.assign(new Error(`méthode non supportée: ${m.method}`), { code: -32601 });
-        this.send({ id: m.id, result: await this.h.onPermission(m.params.sessionId, m.params) });
+        this.permissions++;
+        for (const p of this.pending.values()) p.reset();
+        try { this.send({ id: m.id, result: await this.h.onPermission(m.params.sessionId, m.params) }); }
+        finally {
+          this.permissions--;
+          for (const p of this.pending.values()) p.reset();
+        }
       } catch (e: any) {
         this.send({ id: m.id, error: { code: e.code ?? -32603, message: String(e.message ?? e) } });
       }
@@ -122,9 +134,11 @@ export class AcpConnection {
   }
 
   kill() {
+    if (!this.alive) return;
     this.alive = false;
     for (const p of this.pending.values()) p.reject(new Error('agent arrêté'));
     this.pending.clear(); this.proc.kill();
+    this.h.onExit?.(null, this.stderr);
   }
 }
 

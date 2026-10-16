@@ -98,6 +98,98 @@ test('hub: plan mode asks before edits, and switching agent hands off context', 
   assert.match(info.text, /Fake2.*reprise/);
 });
 
+test('permissions: human wait pauses inactivity, then approval restarts the agent deadline', async () => {
+  const fixture = join(home, 'permission-agent.mjs');
+  writeFileSync(fixture, `
+    import { createInterface } from 'node:readline';
+    const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+    let prompt;
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const m = JSON.parse(line);
+      if (m.method === 'initialize') return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      if (m.method === 'session/new') return send({ id: m.id, result: { sessionId: 'permission-fixture' } });
+      if (m.method === 'session/prompt') {
+        prompt = m;
+        return send({ id: 'permission-1', method: 'session/request_permission', params: {
+          sessionId: 'permission-fixture', toolCall: { toolCallId: 'edit-1', kind: 'edit', title: 'Modifier le fichier' },
+          options: [{ optionId: 'yes', name: 'Autoriser', kind: 'allow_once' }]
+        } });
+      }
+      if (m.id === 'permission-1' && m.result?.outcome?.optionId === 'yes' &&
+          !prompt.params.prompt.some((b) => b.text?.includes('stall-after-approval'))) {
+        setTimeout(() => {
+          send({ method: 'session/update', params: { sessionId: 'permission-fixture', update: {
+            sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Travail terminé après autorisation' }
+          } } });
+          send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+        }, 100);
+      }
+    });
+  `);
+  config.agents.permission = { name: 'Permission', cmd: process.execPath, args: [fixture], strengths: '' };
+  const previous = config.stallTimeoutMs;
+  config.stallTimeoutMs = 200;
+  const p = await hub.createProject({ name: 'permission-wait' });
+  const sessions: string[] = [];
+  try {
+    for (const shouldStall of [false, true]) {
+      const s = hub.createSession(p.id); sessions.push(s.id);
+      hub.setAutoApprove(s.id, false);
+      hub.prompt(s.id, shouldStall ? 'stall-after-approval' : 'effectue la modification', { agent: 'permission' });
+      const permission = await waitFor(() => hub.snapshot(s.id).items.find((item: any) => item.type === 'permission'));
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      const waiting = hub.snapshot(s.id);
+      assert.equal(waiting.state.waiting, true);
+      assert.equal(hub.jobs(s.id)[0].status, 'running', 'human approval must not consume the agent inactivity deadline');
+      hub.respondPermission(s.id, permission.id, 'yes');
+      await waitIdle(s.id);
+      const job = hub.jobs(s.id)[0];
+      assert.equal(job.status, shouldStall ? 'error' : 'done', job.error ?? JSON.stringify(job.result));
+      if (shouldStall) assert.match(job.error, /bloqué|délai ACP/);
+      else assert.match(hub.snapshot(s.id).items.find((item: any) => item.type === 'assistant').text, /Travail terminé/);
+    }
+  } finally {
+    for (const id of sessions) hub.cancel(id);
+    config.stallTimeoutMs = previous; delete config.agents.permission;
+  }
+});
+
+test('ACP: a request timeout disconnects the session and the next turn reconnects', async () => {
+  const fixture = join(home, 'timeout-agent.mjs');
+  writeFileSync(fixture, `
+    import { createInterface } from 'node:readline';
+    const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const m = JSON.parse(line);
+      if (m.method === 'initialize') return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      if (m.method === 'session/new') return send({ id: m.id, result: { sessionId: 'timeout-fixture' } });
+      if (m.method === 'session/prompt') {
+        send({ method: 'session/update', params: { sessionId: 'timeout-fixture', update: {
+          sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Réponse' }
+        } } });
+        send({ id: m.id, result: { stopReason: 'end_turn' } });
+      }
+    });
+  `);
+  config.agents.timeout = { name: 'Timeout', cmd: process.execPath, args: [fixture], strengths: '' };
+  const previous = config.agentTimeoutMs;
+  const p = await hub.createProject({ name: 'timeout-reconnect' }), s = hub.createSession(p.id);
+  try {
+    hub.prompt(s.id, 'première réponse', { agent: 'timeout' }); await waitIdle(s.id);
+    assert.equal(hub.jobs(s.id)[0].status, 'done');
+    const pid = hub.get(s.id).a!.conn.proc.pid;
+    config.agentTimeoutMs = 100;
+    await assert.rejects(hub.setConfig(s.id, 'model', 'ignored'), /délai ACP/);
+    assert.equal(hub.snapshot(s.id).state.connected, false, 'a timed-out ACP process must not stay connected');
+    config.agentTimeoutMs = previous;
+    hub.prompt(s.id, 'nouvelle réponse'); await waitIdle(s.id);
+    assert.deepEqual(hub.jobs(s.id).map((job) => job.status), ['done', 'done']);
+    assert.notEqual(hub.get(s.id).a!.conn.proc.pid, pid);
+  } finally {
+    hub.cancel(s.id); config.agentTimeoutMs = previous; delete config.agents.timeout;
+  }
+});
+
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 function gitRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'avity-repo-'));
