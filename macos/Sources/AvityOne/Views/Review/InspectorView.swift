@@ -93,7 +93,7 @@ struct ChangesPane: View {
     .task(id: thread.id) { await load() }
     .onChange(of: thread.live.busy) { _, busy in if !busy { Task { await load() } } }
     .sheet(isPresented: $showPR) { PullRequestSheet(thread: thread) }
-    .alert("Commenter \(comment?.path ?? ""):\(comment?.line.newNumber ?? 0)", isPresented: Binding(get: { comment != nil }, set: { if !$0 { comment = nil } })) {
+    .alert(commentTitle, isPresented: Binding(get: { comment != nil }, set: { if !$0 { comment = nil } })) {
       TextField("Ce qu’il faut changer", text: $commentText)
       Button("Envoyer à l’agent") { sendComment() }
       Button("Annuler", role: .cancel) {}
@@ -103,6 +103,11 @@ struct ChangesPane: View {
         if let target = confirmRevert { select(path: target.path, hunk: target.hunk, action: "reject", staged: false) }
       }
     } message: { Text("Le contenu modifié sera perdu.") }
+  }
+
+  private var commentTitle: String {
+    guard let comment else { return "Commenter" }
+    return "Commenter \(comment.path)" + (comment.line.newNumber.map { ":\($0)" } ?? "")
   }
 
   private var cleanHint: String {

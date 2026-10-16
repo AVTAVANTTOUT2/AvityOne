@@ -150,7 +150,7 @@ struct SessionRowView: View {
         HStack(spacing: 4) {
           if let agent = row.agent {
             Image(systemName: AgentIdentity.of(agent).symbol).foregroundStyle(AgentIdentity.of(agent).tint)
-            Text(app.agents.first { $0.id == agent }?.name ?? agent)
+            Text(verbatim: app.agentName(agent))
           }
           if row.worktree != nil || row.isolated { Image(systemName: "arrow.triangle.branch") }
           Text(relativeTime(row.updatedAt))

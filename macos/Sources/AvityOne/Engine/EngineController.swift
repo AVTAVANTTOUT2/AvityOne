@@ -126,7 +126,8 @@ final class EngineController: @unchecked Sendable {
     throw Failure.timeout(tail())
   }
 
-  /// Seeds config.json on first launch: loopback only, projects in ~/Developer, and a token (the engine only creates
+  /// Seeds config.json on first launch: loopback only, new projects in ~/AvityOne (outside the folders macOS protects),
+  /// and a token (the engine only creates
   /// one when the file is missing, so a seeded file must carry it).
   private func prepareHome() throws -> String {
     let fm = FileManager.default
@@ -141,7 +142,7 @@ final class EngineController: @unchecked Sendable {
       config = parsed
     } else {
       config["host"] = "127.0.0.1"
-      config["projectsDir"] = .string(fm.homeDirectoryForCurrentUser.appendingPathComponent("Developer").path)
+      config["projectsDir"] = .string(fm.homeDirectoryForCurrentUser.appendingPathComponent("AvityOne").path)
     }
     if let token = config["token"]?.string, !token.isEmpty, fm.fileExists(atPath: file.path) { return token }
     let token = Self.randomToken()

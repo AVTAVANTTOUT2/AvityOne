@@ -101,7 +101,7 @@ Les **actions des agents** suivent les règles du moteur :
 | CLI installés par l'app (npm) | `~/Library/Application Support/AvityOne/tools/bin` : pas de sudo, rien dans l'app signée |
 | CLI installés par leurs propres installateurs | `~/.local/bin` (Cursor, installateur natif de Claude), `~/.opencode/bin` |
 | Commande `avity` | `~/Library/Application Support/AvityOne/tools/bin/avity`, régénérée à chaque démarrage et pointée vers ce moteur |
-| Projets par défaut | `~/Developer` (modifiable dans la configuration : `projectsDir`) |
+| Nouveaux projets (clone, dossier vide) et projet « perso » | `~/AvityOne`, hors des dossiers protégés par macOS (modifiable : `projectsDir`) |
 
 Le moteur reçoit un PATH complet, dans cet ordre :
 

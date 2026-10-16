@@ -112,9 +112,7 @@ struct FeedView: View {
     }
   }
 
-  private func agentName(_ id: String?) -> String {
-    app.agents.first { $0.id == id }?.name ?? id ?? "Agent"
-  }
+  private func agentName(_ id: String?) -> String { app.agentName(id) }
 
   /// The turn's agent header goes above the first item the agent produces.
   private func showsHead(at index: Int, in items: [Item]) -> Bool {
@@ -192,7 +190,7 @@ struct NewThreadView: View {
       ScrollView {
         VStack(spacing: 18) {
           LogoMark(size: 44)
-          Text(app.selectedProject.map { "Que construit-on dans \($0.name) ?" } ?? "Que construit-on ?").font(.title.weight(.semibold))
+          Text(verbatim: heading).font(.title.weight(.semibold))
           Text(app.selectedProject?.path ?? "").font(.callout.monospaced()).foregroundStyle(.secondary)
           LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
             ForEach(Self.suggestions) { suggestion in
@@ -229,6 +227,11 @@ struct NewThreadView: View {
     }
     .navigationTitle("Nouveau fil")
     .navigationSubtitle(app.selectedProject?.name ?? "")
+  }
+
+  private var heading: String {
+    guard let name = app.selectedProject?.name else { return "Que construit-on ?" }
+    return "Que construit-on dans \(name) ?"
   }
 
   struct Suggestion: Identifiable { var title: String; var prompt: String; var id: String { title } }

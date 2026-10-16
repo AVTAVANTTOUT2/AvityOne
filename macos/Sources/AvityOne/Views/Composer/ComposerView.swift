@@ -168,7 +168,7 @@ struct ComposerControls: View {
         HStack(spacing: 4) {
           Image(systemName: composer.agent == "auto" ? "sparkles" : AgentIdentity.of(composer.agent).symbol)
             .foregroundStyle(composer.agent == "auto" ? Palette.accentInk : AgentIdentity.of(composer.agent).tint)
-          Text(composer.agent == "auto" ? "Auto" : (app.agents.first { $0.id == composer.agent }?.name ?? composer.agent))
+          Text(verbatim: composer.agent == "auto" ? "Auto" : app.agentName(composer.agent))
         }
       }
       .menuStyle(.borderlessButton).fixedSize()

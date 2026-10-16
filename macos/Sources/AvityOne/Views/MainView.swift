@@ -131,7 +131,7 @@ struct ThreadBadges: View {
     HStack(spacing: 6) {
       if let agent = thread.live.agent ?? thread.session?.agent {
         AgentAvatar(agent: agent, size: 18, working: thread.live.busy)
-        Text(thread.app.agents.first { $0.id == agent }?.name ?? agent).font(.callout.weight(.medium))
+        Text(verbatim: thread.app.agentName(agent)).font(.callout.weight(.medium))
       }
       if let model = thread.live.selectors.first(where: { $0.category == "model" }) { Tag(text: model.currentName) }
       if thread.live.isolated || thread.session?.worktree != nil { Tag(text: "Worktree", color: Palette.violet, symbol: "arrow.triangle.branch") }
@@ -146,7 +146,9 @@ struct OpenInMenu: View {
   var path: String
   var body: some View {
     let targets = OpenIn.installed()
-    let preferred = targets.first { $0.id == app.preferences.openIn } ?? targets.first
+    let preferred: OpenIn.Target? = targets.first { $0.id == app.preferences.openIn } ?? targets.first
+    let title: String = preferred.map { "Ouvrir dans " + $0.name } ?? "Ouvrir"
+    let symbol: String = preferred?.symbol ?? "arrow.up.forward.app"
     Menu {
       ForEach(targets) { target in
         Button { app.preferences.openIn = target.id; OpenIn.open(path, in: target) } label: { Label(target.name, systemImage: target.symbol) }
@@ -154,7 +156,7 @@ struct OpenInMenu: View {
       Divider()
       Button("Copier le chemin") { copyToPasteboard(path) }
     } label: {
-      Label(preferred.map { "Ouvrir dans \($0.name)" } ?? "Ouvrir", systemImage: preferred?.symbol ?? "arrow.up.forward.app")
+      Label(title, systemImage: symbol)
     } primaryAction: {
       if let preferred { OpenIn.open(path, in: preferred) }
     }

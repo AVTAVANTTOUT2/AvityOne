@@ -84,6 +84,12 @@ enum InspectorTab: String, CaseIterable, Identifiable {
   var selectedThread: ThreadModel? { selectedSessionId.flatMap { threads[$0] } }
   var installedAgents: [AgentSummary] { agents.filter(\.installed) }
 
+  /// Display name of an agent id (the id itself for an agent the engine does not list).
+  func agentName(_ id: String?) -> String {
+    guard let id else { return "Agent" }
+    return agents.first { $0.id == id }?.name ?? id
+  }
+
   // MARK: Connection
 
   func boot() async {
@@ -265,7 +271,7 @@ enum InspectorTab: String, CaseIterable, Identifiable {
       a.unread = event.kind == "error" ? .error : .done
       activity[event.sessionId] = a
     }
-    let agent = agents.first { $0.id == event.agent }?.name ?? event.agent ?? "Agent"
+    let agent = agentName(event.agent)
     let title = event.title ?? "Fil sans titre"
     let heading: String
     switch event.kind {

@@ -71,7 +71,7 @@ struct MergePane: View {
                   Toggle(isOn: Binding(get: { selectedBranches.contains(branch.id) }, set: { on in if on { selectedBranches.insert(branch.id) } else { selectedBranches.remove(branch.id) } })) {
                     HStack {
                       Text(branch.branch).font(.callout.monospaced())
-                      Text(app.sessions.values.flatMap { $0 }.first { $0.id == branch.id }?.displayTitle ?? "").font(.caption).foregroundStyle(.secondary)
+                      Text(verbatim: title(of: branch.id)).font(.caption).foregroundStyle(.secondary)
                     }
                   }
                   ForEach(branch.files, id: \.self) { file in
@@ -101,6 +101,11 @@ struct MergePane: View {
     }
     .task(id: "\(thread.id)-\(thread.validationRevision)") { await load() }
     .onChange(of: thread.live.busy) { _, busy in if !busy { Task { await load() } } }
+  }
+
+  private func title(of session: String) -> String {
+    for rows in app.sessions.values { if let row = rows.first(where: { $0.id == session }) { return row.displayTitle } }
+    return ""
   }
 
   private func client() throws -> APIClient {

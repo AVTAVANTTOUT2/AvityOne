@@ -50,12 +50,14 @@ struct ToolDiffView: View {
   var diff: ToolDiff
   var body: some View {
     let lines = DiffParser.lineDiff(old: diff.old, new: diff.new)
+    let added: Int = lines.filter { $0.kind == .added }.count
+    let removed: Int = lines.filter { $0.kind == .removed }.count
     VStack(alignment: .leading, spacing: 0) {
       HStack {
         Image(systemName: "doc.text").foregroundStyle(.secondary)
         Text(diff.path).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
         Spacer()
-        Text("+\(lines.filter { $0.kind == .added }.count) −\(lines.filter { $0.kind == .removed }.count)").font(.caption.monospaced()).foregroundStyle(.secondary)
+        Text(verbatim: "+\(added) −\(removed)").font(.caption.monospaced()).foregroundStyle(.secondary)
       }
       .padding(.horizontal, 10).padding(.vertical, 6)
       Divider().opacity(0.5)

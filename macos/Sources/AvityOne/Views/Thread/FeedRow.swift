@@ -89,7 +89,7 @@ struct UserMessageRow: View {
           HStack { ForEach(attachments) { a in Tag(text: a.name, symbol: a.mime.hasPrefix("image/") ? "photo" : "paperclip") } }
         }
         HStack(spacing: 6) {
-          if let agent = item.agent { Text("→ \(app.agents.first { $0.id == agent }?.name ?? agent)") }
+          if let agent = item.agent { Text(verbatim: "→ " + app.agentName(agent)) }
           if let reason = item.reason { Text("· \(reason)") }
           if item.mode == "plan" { Tag(text: "plan", color: Palette.violet) }
           if item.edited == true { Text("· modifié") }
@@ -309,10 +309,7 @@ struct TurnFooter: View {
 struct ReviewRow: View {
   @Environment(AppModel.self) private var app
   var item: Item
-  private var reviewer: String? {
-    guard let id = item.agent else { return nil }
-    return app.agents.first { $0.id == id }?.name ?? id
-  }
+  private var reviewer: String? { item.agent.map { app.agentName($0) } }
   var body: some View {
     Card(tint: item.status == "done" ? (item.approved == true ? Palette.green : Palette.red) : nil) {
       VStack(alignment: .leading, spacing: 8) {
