@@ -469,7 +469,7 @@ function Workspace() {
   }, [sessions, openSession]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      const direction = sessionDirection(e, !!document.querySelector('dialog[open]'));
+      const direction = sessionDirection(e, !!document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'));
       if (!direction) return;
       e.preventDefault();
       step(direction);

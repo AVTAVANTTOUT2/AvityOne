@@ -133,7 +133,7 @@ les doublons normalisés ; les contradictions et péremptions concernent les fai
 - [x] Modification et renvoi des messages.
 - [x] Régénération des réponses.
 - [x] Copie dédiée des réponses et blocs de code.
-- [x] Navigation précédent/suivant entre sessions.
+- [x] Navigation précédent/suivant entre sessions, avec raccourcis suspendus pendant les dialogues.
 
 ## Fichiers et multimodalité
 
@@ -156,12 +156,16 @@ les doublons normalisés ; les contradictions et péremptions concernent les fai
 - [x] Lancement des exécutions parallèles sur mobile.
 - [x] Choix de la langue de dictée.
 - [x] Dictée sur les navigateurs sans reconnaissance vocale native.
+- [x] Priorité au moteur configuré, repli navigateur annoncé, annulation et récupération de l'enregistrement.
 
 Pistes : happy (client mobile pour Claude et Codex).
 
-Portée : PWA sur HTTPS/localhost et navigateur compatible ; aucun travail de session hors ligne. Sans reconnaissance
-native, la dictée exige une commande de transcription serveur configurée ; le [guide local](docs/dictee.md) décrit
-le moteur CPU multilingue. Les appareils physiques restent à qualifier.
+Portée : PWA sur HTTPS/localhost et navigateur compatible ; aucun travail de session hors ligne. La commande de
+transcription configurée est prioritaire ; sans elle, la reconnaissance native est utilisée lorsqu'elle existe,
+avec une indication explicite de ce repli. Les erreurs serveur ne déclenchent pas de bascule vers le navigateur.
+L'arrêt anticipé à 4 Mio réserve le dernier fragment avant le plafond de 5 Mio ; l'audio reste téléchargeable après
+un échec. L'annulation et le changement de session libèrent le micro et écartent les résultats tardifs.
+Le [guide local](docs/dictee.md) décrit le moteur CPU multilingue. Les appareils physiques restent à qualifier.
 
 ## Administration et exploitation
 
@@ -170,7 +174,7 @@ le moteur CPU multilingue. Les appareils physiques restent à qualifier.
 - [x] Rotation du jeton et révocation des accès depuis l’interface.
 - [x] Configuration intégrée HTTPS et Tailscale.
 - [x] Sauvegarde et restauration intégrées.
-- [x] Suivi des tokens, coûts, budgets et quotas.
+- [x] Suivi des tokens, coûts, budgets et quotas, avec cartes d'état, dates de mesure et erreurs explicites.
 - [x] Traces centralisées des exécutions.
 - [x] Évaluation comparative de la qualité des agents.
 
@@ -179,6 +183,8 @@ Pistes : Langfuse (traces et évaluations).
 Portée : tokens et coûts proviennent des métriques déclarées par les agents, et une valeur absente reste inconnue.
 Les quotas nécessitent un raccordement fournisseur configuré, distinct des tokens/coûts ; une mesure expire après
 5 minutes ou à sa remise à zéro. Seul un quota mesuré, encore frais et épuisé bloque les nouveaux prompts.
+Les cartes distinguent les quotas disponibles, épuisés, inconnus et expirés ; une valeur absente ou périmée ne
+devient pas un faux zéro. La vérification explicite montre son attente et ses erreurs, sans doublon simultané par agent.
 Les sauvegardes couvrent SQLite et les pièces jointes, pas les dossiers des projets ni la configuration. La restauration
 exige un schéma compatible et un redémarrage après maintenance. HTTPS repose sur un hôte Tailscale déjà connecté.
 

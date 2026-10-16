@@ -42,8 +42,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
   images/audio/ressources ACP et affichage natif des réponses prises en charge. Conservation des pièces lors de
   la modification, de la régénération et de la bifurcation ; contexte multimédia récent lors d'un changement d'agent.
 - **PWA et dictée** : manifest et service worker sans cache des données privées, interface mobile pour les options
-  et plans parallèles, six langues de dictée. Enregistrement et transcription par commande serveur configurée
-  lorsque le navigateur n'offre pas de reconnaissance native.
+  et plans parallèles, six langues de dictée. La commande serveur configurée est prioritaire ; la reconnaissance
+  du navigateur est annoncée et utilisée uniquement en l'absence de moteur configuré.
 - **Exploitation intégrée** : configuration globale validée, déconnexion, rotation du jeton et révocation des
   accès, pilotage HTTPS Tailscale, sauvegarde SQLite et pièces jointes avec empreintes. Restauration contrôlée avec
   copie de sécurité et maintenance jusqu'au redémarrage ; fichiers des projets et configuration exclus.
@@ -115,6 +115,17 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- Le brouillon JSON d'administration survit au changement d'onglet ; fermeture et rechargement préviennent d'une
+  saisie non enregistrée, et une configuration reçue plus récente est signalée avant tout écrasement.
+- Les actions repliées du compositeur sont retirées de l'arbre d'accessibilité et désactivées jusqu'à l'ouverture du menu.
+
+- La dictée utilise le moteur serveur configuré même quand le navigateur expose Web Speech. Les erreurs sont visibles,
+  l'activation et la transcription peuvent être annulées, et les captures tardives ou interrompues libèrent le micro.
+  L'enregistrement s'arrête dès 4 Mio pour réserver le dernier fragment ; l'audio reste téléchargeable en cas d'échec
+  ou de dépassement du plafond de 5 Mio, sans bascule silencieuse vers un fournisseur du navigateur.
+- Les cartes d'agents distinguent connexion, quota disponible, épuisé, inconnu et expiré, avec dates et explications.
+  Une mesure absente ou périmée n'affiche pas un faux zéro ; les vérifications en cours et leurs erreurs sont visibles.
+- Les raccourcis Alt+↑ / Alt+↓ ne changent plus de session lorsqu'un dialogue est ouvert, pour préserver sa saisie.
 - L'actualisation des agents remplace le résultat affiché au lieu de conserver un ancien quota en cache local.
 - Les explications de quota masquent également les secrets placés dans les arguments de commande.
 - L'attente d'une autorisation humaine suspend les délais d'inactivité ACP ; la reprise repart avec un délai complet.

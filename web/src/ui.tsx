@@ -114,8 +114,8 @@ export function PlusMenu({ actions }: { actions: DropAction[] }) {
       <Liquid fill="#2e2e2e" blur={6} contrast={18} shadow="0 2px 6px rgba(0,0,0,.35)" style={{ position: 'absolute', inset: 0 }}>
         {actions.map((a, i) => (
           <Liquid.Item key={a.label} className="plus-drop" x={open ? (i + 1) * step : 0} transition="bouncy" delay={open ? i * 40 : 0} radius={15}>
-            <button className={`drop-btn ${a.on ? 'on' : ''}`} title={a.label} aria-label={a.label} tabIndex={open ? 0 : -1}
-              disabled={a.disabled} onClick={() => { a.onClick(); }}><Icon name={a.icon} size={15} /></button>
+            <button className={`drop-btn ${a.on ? 'on' : ''}`} title={a.label} aria-label={a.label} aria-hidden={!open} tabIndex={open ? 0 : -1}
+              disabled={!open || a.disabled} onClick={() => { a.onClick(); }}><Icon name={a.icon} size={15} /></button>
           </Liquid.Item>
         ))}
         <Liquid.Item className="plus-drop" radius={15}>
