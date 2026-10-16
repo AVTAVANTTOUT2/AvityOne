@@ -925,6 +925,30 @@ test('speech: configurable engine receives isolated recording and selected langu
     await assert.rejects(() => transcribe({ mime: 'audio/webm', language: 'bad;command', base64: 'YQ==' }), /Langue/);
   } finally { cfg.transcription = before; }
 });
+test('dictée locale : CPU hors ligne, langue régionale et erreurs du modèle', async (t) => {
+  const { which } = await import('../src/config.ts');
+  const python = which('python3');
+  if (!python) { t.skip('Python 3 requis uniquement pour vérifier le moteur de dictée optionnel'); return; }
+  const { transcribe } = await import('../src/speech.ts');
+  const previous = config.transcription, pythonPath = process.env.PYTHONPATH;
+  const model = join(home, 'test-whisper-model');
+  mkdirSync(model);
+  writeFileSync(join(model, 'model.bin'), 'fake model');
+  process.env.PYTHONPATH = fileURLToPath(new URL('./fake-whisper', import.meta.url));
+  try {
+    config.transcription = { command: python, args: ['-B', fileURLToPath(new URL('../deploy/transcribe.py', import.meta.url)),
+      '--file', '{file}', '--language', '{language}', '--model', model, '--threads', '2'] };
+    const input = { mime: 'audio/webm', language: 'fr-FR', base64: Buffer.from('fake-audio').toString('base64') };
+    assert.equal((await transcribe(input)).text, 'Bonjour en français. Deuxième phrase.');
+    const concurrent = await Promise.all([transcribe(input), transcribe(input)]);
+    assert.equal(concurrent.length, 2, 'les chargements concurrents du modèle sont sérialisés');
+    unlinkSync(join(model, 'model.bin'));
+    await assert.rejects(() => transcribe(input), /moteur de transcription/);
+  } finally {
+    config.transcription = previous;
+    if (pythonPath === undefined) delete process.env.PYTHONPATH; else process.env.PYTHONPATH = pythonPath;
+  }
+});
 test('administration: configuration validée, secrets préservés et rotation persistante', async () => {
   const { publicConfig, updateConfig, rotateToken } = await import('../src/config.ts');
   const saved = structuredClone(config);
