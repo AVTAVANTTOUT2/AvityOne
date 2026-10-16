@@ -1064,6 +1064,8 @@ test('quotas: le délai propre à une source est borné et conservé par la conf
     updateConfig({ agents });
     assert.equal(publicConfig().agents.fake.quota.timeoutMs, 1000);
     assert.match((await probeQuota('fake')).error!, /expirée après 1 s/);
+    config.agents.fake.quota = { cmd: process.execPath, args: ['-e', 'console.log(JSON.stringify({ remaining: Number(process.env.AVITY_QUOTA_TIMEOUT_MS), limit: 30000, unit: "ms" }))'], env: { AVITY_QUOTA_TIMEOUT_MS: '30000' }, timeoutMs: 1000 };
+    assert.equal((await probeQuota('fake')).remaining, 1000);
     for (const timeoutMs of [0, 999, 30001, 1500.5]) {
       assert.throws(() => updateConfig({ agents: { ...publicConfig().agents, fake: { ...config.agents.fake, quota: { ...config.agents.fake.quota, timeoutMs } } } }), /quota/);
     }

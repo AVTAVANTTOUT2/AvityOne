@@ -30,7 +30,7 @@ export async function probeQuota(id: string): Promise<QuotaSnapshot> {
   const timeoutMs = source.timeoutMs ?? 5000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30000) return recordQuota({ ...snapshot, error: 'délai de quota invalide (1 à 30 secondes)' });
   try {
-    const { stdout } = await promisify(execFile)(source.cmd, source.args, { cwd: HOME, env: { ...process.env, ...source.env }, signal: AbortSignal.timeout(timeoutMs), killSignal: 'SIGKILL', maxBuffer: 64 * 1024 });
+    const { stdout } = await promisify(execFile)(source.cmd, source.args, { cwd: HOME, env: { ...process.env, ...source.env, AVITY_QUOTA_TIMEOUT_MS: String(timeoutMs) }, signal: AbortSignal.timeout(timeoutMs), killSignal: 'SIGKILL', maxBuffer: 64 * 1024 });
     let value: any;
     try { value = JSON.parse(stdout); } catch { throw new Error('JSON de quota invalide'); }
     const description = (text: unknown, max: number) => typeof text === 'string' && !!text.trim() && text.length <= max && !/[\x00-\x1f]/.test(text);
