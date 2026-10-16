@@ -61,7 +61,7 @@ final class ContractTests: XCTestCase {
   }
 
   func testServerEvents() throws {
-    let events = [
+    let events = try [
       #"{"type":"item","sessionId":"s","projectId":1,"item":{"id":9,"type":"assistant","agent":"fake","text":"mode=default"}}"#,
       #"{"type":"state","sessionId":"s","projectId":1,"state":{"busy":false,"waiting":true}}"#,
       #"{"type":"activity","sessionId":"s","projectId":1,"kind":"waiting","title":null,"agent":"fake","text":"Edit a.txt"}"#,
