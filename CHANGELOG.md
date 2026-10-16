@@ -8,7 +8,7 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 ### Ajouté
 
 - Quotas Cursor issus des compteurs natifs, avec réserves distinctes et prise en compte des crédits et restrictions.
-- Vérification du contexte anonyme OpenCode : modèle global et gratuité vérifiés, absence de plafond publiée explicitement.
+- Vérification du contexte anonyme OpenCode : modèle global et tarif catalogue nul vérifiés, plafond non publié signalé explicitement.
 - Détails fournisseur persistés et délai configurable par source de quota, de 1 à 30 secondes.
 - Sources de quotas réels pour Codex et Claude, sans convertir les statistiques locales en solde fournisseur.
 - Installation isolée d'une dictée CPU avec faster-whisper et modèle multilingue, sans dépendance runtime Node.

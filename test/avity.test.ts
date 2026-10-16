@@ -1070,6 +1070,28 @@ test('quotas: le délai propre à une source est borné et conservé par la conf
   } finally { Object.assign(config, saved); }
 });
 
+test('quotas: le runner accepte les mesures Cursor et ses réserves non bloquantes', async () => {
+  const { normalizeCursorQuota } = await import('../src/cursor-quota.ts');
+  const { cursorMonthly } = await import('./cursor-quota-fixtures.ts');
+  const { probeQuota } = await import('../src/agents.ts');
+  const { assertBudget } = await import('../src/admin.ts');
+  const paid = cursorMonthly();
+  (paid.usage as any).planUsage = { autoPercentUsed: 100, apiPercentUsed: 100, totalPercentUsed: 100 };
+  paid.onDemand = { usageBasedPremiumRequests: true };
+  const source = { cmd: process.execPath, args: [fileURLToPath(new URL('./quota-source.mjs', import.meta.url))], env: { QUOTA_JSON: '' } };
+  config.agents.cursorFixture = { ...config.agents.fake, quota: source };
+  try {
+    for (const expected of [normalizeCursorQuota(cursorMonthly()), normalizeCursorQuota(paid), normalizeCursorQuota({})]) {
+      source.env.QUOTA_JSON = JSON.stringify(expected);
+      const actual = await probeQuota('cursorFixture');
+      assert.equal(actual.status, expected.status);
+      assert.equal(actual.details, expected.details ?? null);
+      assert.equal(actual.error, expected.reason ?? null);
+      assert.doesNotThrow(() => assertBudget('cursorFixture'));
+    }
+  } finally { delete config.agents.cursorFixture; }
+});
+
 test('quotas: une source sans plafond publié conserve sa preuve sans inventer de solde', async () => {
   const { probeQuota } = await import('../src/agents.ts');
   const { agentQuota, assertBudget } = await import('../src/admin.ts');
@@ -1500,9 +1522,9 @@ test('source Claude: identifiants locaux, endpoint fixe, lecture bornée et erre
   await assert.rejects(readClaudeQuota({ credentialsPath: join(home, 'missing-credentials'), fetcher }), /absente ou illisible/);
 });
 
-test('sources de quotas: Cursor et OpenCode restent explicitement inconnus', () => {
+test('sources de quotas: le répartiteur rejette les sources non prises en charge', () => {
   const script = fileURLToPath(new URL('../src/quota-source.ts', import.meta.url));
-  for (const provider of ['cursor', 'opencode']) {
+  for (const provider of ['non-configure', 'inconnu']) {
     try { execFileSync(process.execPath, [script, provider], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); assert.fail('source non disponible acceptée'); }
     catch (e: any) {
       assert.equal(e.status, 1);
