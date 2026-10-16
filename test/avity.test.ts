@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { normalizeCursorQuota, readCursorQuota, type CursorReadings } from '../src/cursor-quota.ts';
+import { cursorMonthly, cursorWeekly } from './cursor-quota-fixtures.ts';
 import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
@@ -1509,4 +1511,122 @@ test('sources de quotas: Cursor et OpenCode restent explicitement inconnus', () 
       assert.match(JSON.parse(e.stderr).error, /non prise en charge/);
     }
   }
+});
+
+test('Cursor quotas: total natif et deux pools sans déduire un plafond depuis le tarif', () => {
+  const now = Date.now(), readings = cursorMonthly(now), result = normalizeCursorQuota(readings, now);
+  assert.equal(result.status, 'available');
+  assert.equal(result.remaining, 40);
+  assert.equal(result.limit, 100);
+  assert.match(result.details ?? '', /modèles Cursor : 46,875 %/);
+  assert.match(result.details ?? '', /autres modèles : 0 %/);
+  assert.match(result.details ?? '', /demande : désactivé/);
+  assert.equal(result.resetAt, new Date(now + 86400000).toISOString());
+  assert.ok(result.details && result.details.length <= 1000);
+  const usage = readings.usage as any;
+  usage.planUsage.totalPercentUsed = 100;
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown', 'un pool disponible interdit un épuisement global');
+  for (const value of [undefined, null, '50', NaN, -1, 101]) {
+    usage.planUsage.totalPercentUsed = value;
+    assert.equal(normalizeCursorQuota(readings, now).status, 'unknown');
+  }
+  usage.planUsage.totalPercentUsed = 60;
+  delete usage.planUsage.apiPercentUsed;
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown', 'un pool manquant ne vaut pas zéro');
+  const expired = cursorMonthly(now); (expired.usage as any).billingCycleEnd = String(now - 1);
+  assert.equal(normalizeCursorQuota(expired, now).status, 'unknown');
+});
+
+test('Cursor quotas: aucun épuisement global avec crédit, paiement, autre modèle ou mode lent', () => {
+  const base = cursorMonthly();
+  (base.usage as any).planUsage = { autoPercentUsed: 100, apiPercentUsed: 100, totalPercentUsed: 100 };
+  base.policy = { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK' };
+  assert.equal(normalizeCursorQuota(base).status, 'exhausted');
+  const variants: Partial<CursorReadings>[] = [
+    { onDemand: { usageBasedPremiumRequests: true } }, { onDemand: undefined },
+    { credits: { hasCreditGrants: true, creditBalanceCents: '500' } }, { credits: undefined },
+    { policy: undefined }, { policy: {} }, { policy: { stage: 'LIMIT_HIT_STAGE_WEEKLY_LIMIT' } },
+    { policy: { stage: 'LIMIT_HIT_STAGE_AUTO_SWITCH' } }, { policy: { stage: 'LIMIT_HIT_STAGE_SLOW_POOL' } },
+    { policy: { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK', isInSlowPool: true } },
+    { policy: { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK', allowedModelIds: ['free-model'] } },
+  ];
+  for (const change of variants) {
+    const result = normalizeCursorQuota({ ...base, ...change });
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.remaining, null); assert.equal(result.limit, null); assert.equal(result.unit, null);
+    assert.equal(Object.hasOwn(result, 'resetAt'), false);
+    assert.ok(result.details && result.details.length <= 1000);
+  }
+  const paid = normalizeCursorQuota({ ...base, onDemand: { usageBasedPremiumRequests: true } });
+  assert.match(paid.details ?? '', /aucun accès illimité déduit/);
+  assert.equal(Object.hasOwn(paid, 'resetAt'), false, 'unknown ne porte pas de date de remise à zéro exploitable');
+  const limited = structuredClone(base);
+  limited.onDemand = { usageBasedPremiumRequests: true };
+  (limited.usage as any).spendLimitUsage = { overallLimit: 1234, overallRemaining: 19 };
+  assert.match(normalizeCursorQuota(limited).details ?? '', /1234 centimes USD ; reste 19 centimes USD/);
+});
+
+test('Cursor quotas: pool hebdomadaire et prépayé séparés, données masquées restent inconnues', () => {
+  const now = Date.now(), readings = cursorWeekly(now);
+  const result = normalizeCursorQuota(readings, now);
+  assert.equal(result.remaining, 75);
+  assert.equal(result.resetAt, new Date(now + 6 * 86400000).toISOString());
+  assert.match(result.details ?? '', /prépayé : 1234 centimes USD/);
+  const weekly = readings.weekly as any;
+  weekly.usagePercent = 100;
+  readings.policy = { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK' };
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown');
+  weekly.prepaidBalanceCents = '0';
+  assert.equal(normalizeCursorQuota(readings, now).status, 'exhausted');
+  weekly.prepaidBalanceWithheld = true;
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown');
+  assert.match(normalizeCursorQuota(readings, now).details ?? '', /masqué/);
+  weekly.prepaidBalanceWithheld = false;
+  weekly.prepaidBalanceCents = '9007199254740993';
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown', 'les int64 non représentables exactement sont rejetés');
+});
+
+test('Cursor quotas: lectures natives bornées, sans mutation, secret ni identité dans la sortie', async () => {
+  const credentialsPath = join(home, 'cursor-quota-auth.json'), fixture = cursorMonthly();
+  writeFileSync(credentialsPath, JSON.stringify({ accessToken: 'synthetic-cursor-token', refreshToken: 'synthetic-refresh' }), { mode: 0o600 });
+  const methods: Record<string, keyof CursorReadings> = { GetCurrentPeriodUsage: 'usage', GetPlanInfo: 'plan', GetCreditGrantsBalance: 'credits', GetUsageBasedPremiumRequests: 'onDemand', GetUsageLimitPolicyStatus: 'policy', GetXaiUserUsageSnapshot: 'weekly' };
+  const called: string[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    const endpoint = new URL(String(url)), method = endpoint.pathname.split('/').at(-1)!;
+    assert.equal(endpoint.origin, 'https://api2.cursor.sh');
+    assert.equal(endpoint.pathname, `/aiserver.v1.DashboardService/${method}`);
+    assert.ok(Object.hasOwn(methods, method));
+    assert.equal(init?.method, 'POST'); assert.equal(init?.body, '{}'); assert.equal(init?.redirect, 'error');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer synthetic-cursor-token');
+    assert.equal(new Headers(init?.headers).get('connect-protocol-version'), '1');
+    called.push(method);
+    return Response.json(fixture[methods[method]]);
+  };
+  assert.equal((await readCursorQuota({ credentialsPath, fetcher })).remaining, 40);
+  assert.equal(called.length, 5);
+  Object.assign(fixture, cursorWeekly()); called.length = 0;
+  assert.equal((await readCursorQuota({ credentialsPath, fetcher })).remaining, 75);
+  assert.ok(called.includes('GetXaiUserUsageSnapshot'));
+  for (const status of [401, 403, 429, 500]) {
+    const result = await readCursorQuota({ credentialsPath, fetcher: async () => new Response('synthetic-cursor-token private@example.invalid', { status }) });
+    assert.equal(result.status, 'unknown'); assert.doesNotMatch(JSON.stringify(result), /synthetic-cursor-token|private@/);
+    assert.equal(Object.hasOwn(result, 'resetAt'), false);
+    assert.equal(Object.hasOwn(result, 'details'), false);
+  }
+  for (const text of ['bad JSON synthetic-cursor-token', 'x'.repeat(70_000)]) {
+    const result = await readCursorQuota({ credentialsPath, fetcher: async () => new Response(text) });
+    assert.equal(result.status, 'unknown'); assert.doesNotMatch(JSON.stringify(result), /synthetic-cursor-token/);
+  }
+  const start = performance.now();
+  const result = await readCursorQuota({ credentialsPath, timeoutMs: 10, fetcher: async (_url, init) => new Promise((_resolve, reject) => {
+    if (init?.signal?.aborted) reject(new Error('synthetic-cursor-token'));
+    else init?.signal?.addEventListener('abort', () => reject(new Error('synthetic-cursor-token')), { once: true });
+    setTimeout(() => {}, 20);
+  }) });
+  assert.equal(result.status, 'unknown'); assert.ok(performance.now() - start < 1000);
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-cursor-token/);
+  const absent = await readCursorQuota({ credentialsPath: join(home, 'absent-cursor-auth'), fetcher });
+  assert.equal(absent.status, 'unknown');
+  assert.equal(Object.hasOwn(absent, 'resetAt'), false);
+  assert.equal(Object.hasOwn(absent, 'details'), false);
 });
