@@ -15,13 +15,20 @@ export const branchOf = (sessionId: string) => `avity/${sessionId}`;
 /** True when `root` is a git repository with at least one commit, i.e. something to branch from. */
 export const canBranch = (root: string) => git(root, 'rev-parse', '--verify', 'HEAD').then(() => true, () => false);
 
-export async function addWorktree(root: string, sessionId: string): Promise<string> {
-  const dir = join(root, '.avity', 'worktrees', sessionId);
-  // Keeps worktrees out of the project's status and indexing without touching its .gitignore.
+/**
+ * Keeps AvityOne's own files (worktrees, imported documents, brief) out of the project's status and indexing without
+ * touching its .gitignore. Files the project already tracks under .avity/ stay tracked.
+ */
+export async function ignoreAvity(root: string) {
   const exclude = join(resolve(root, await git(root, 'rev-parse', '--git-common-dir')), 'info', 'exclude');
   let cur = '';
   try { cur = readFileSync(exclude, 'utf8'); } catch { mkdirSync(dirname(exclude), { recursive: true }); }
-  if (!cur.split('\n').includes('.avity/worktrees/')) appendFileSync(exclude, `${cur && !cur.endsWith('\n') ? '\n' : ''}.avity/worktrees/\n`);
+  if (!cur.split('\n').includes('.avity/')) appendFileSync(exclude, `${cur && !cur.endsWith('\n') ? '\n' : ''}.avity/\n`);
+}
+
+export async function addWorktree(root: string, sessionId: string): Promise<string> {
+  const dir = join(root, '.avity', 'worktrees', sessionId);
+  await ignoreAvity(root);
   await git(root, 'worktree', 'add', dir, '-b', branchOf(sessionId));
   return dir;
 }

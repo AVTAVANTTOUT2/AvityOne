@@ -115,6 +115,13 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- La fusion d'un worktree n'est plus impossible avec un seul agent installé : il relit alors son propre travail.
+- Un document importé (`.avity/imports/`) ou un brief édité dans l'atelier ne bloque plus la fusion : tout `.avity/`
+  est exclu du `git status` du projet, y compris dans les dépôts préparés par une version précédente.
+- Un verdict de revue entouré de texte ou d'un bloc de code est accepté ; seule une revue défavorable bloque la fusion
+  et laisse des remarques à justifier, les remarques mineures restent lisibles dans la revue.
+- L'évaluation comparative lance chaque agent dans un dossier temporaire vide, et non plus dans `~/.avityone`
+  (jeton, conversations).
 - Le brouillon JSON d'administration survit au changement d'onglet ; fermeture et rechargement préviennent d'une
   saisie non enregistrée, et une configuration reçue plus récente est signalée avant tout écrasement.
 - Les actions repliées du compositeur sont retirées de l'arbre d'accessibilité et désactivées jusqu'à l'ouverture du menu.

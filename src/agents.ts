@@ -1,5 +1,8 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { config, HOME, which } from './config.ts';
 import { AcpConnection, openAgent, oneShot } from './acp.ts';
@@ -126,7 +129,10 @@ export async function benchmarkAgents(input: { agents: string[]; prompt: string;
   const suite = randomUUID();
   for (const agent of input.agents) {
     const started = performance.now(); let answer = '', error: string | null = null;
-    try { answer = await oneShot(agent, HOME, input.prompt); } catch (e: any) { error = redact(e.message).slice(0, 500); }
+    // An empty folder per agent: never AvityOne's data directory (token, conversations), nor another agent's leftovers.
+    const cwd = await mkdtemp(join(tmpdir(), 'avity-bench-'));
+    try { answer = await oneShot(agent, cwd, input.prompt); } catch (e: any) { error = redact(e.message).slice(0, 500); }
+    finally { await rm(cwd, { recursive: true, force: true }); }
     run('INSERT INTO agent_evaluations(suite,agent,prompt,expected,answer,passed,duration_ms,error) VALUES(?,?,?,?,?,?,?,?)',
       suite, agent, redact(input.prompt), redact(input.expected), redact(answer).slice(0, 30_000), !error && answer.includes(input.expected) ? 1 : 0, performance.now() - started, error);
   }
