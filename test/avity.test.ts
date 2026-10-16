@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
 process.env.AVITY_HOME = home;
@@ -1353,4 +1354,94 @@ test('restauration: un échec COMMIT rétablit aussi les octets des pièces join
     assert.equal(readFileSync(file, 'utf8'), 'état courant');
     assert.equal(one('SELECT count(*) AS n FROM restore_child')!.n, 0);
   } finally { db.exec('PRAGMA foreign_keys=OFF; DROP TABLE restore_child; DROP TABLE restore_parent'); }
+});
+
+test('sources de quotas: fenêtres réelles, sélection du bucket et crédits sans faux épuisement', () => {
+  const now = Date.now(), soon = Math.ceil(now / 1000) + 3600, later = soon + 86400;
+  const bucket = { limitId: 'codex', primary: { usedPercent: 80, windowDurationMins: 300, resetsAt: soon }, secondary: { usedPercent: 30, windowDurationMins: 10080, resetsAt: later } };
+  const codex = { rateLimits: { primary: { usedPercent: 99 } }, rateLimitsByLimitId: { codex: bucket } };
+  assert.deepEqual(normalizeCodexQuota(codex, 'codex', now), { remaining: 20, limit: 100, unit: 'pourcentage restant (Codex 300 min)', resetAt: new Date(soon * 1000).toISOString() });
+  assert.throws(() => normalizeCodexQuota(codex, 'missing'), /absent/);
+  assert.throws(() => normalizeCodexQuota({ rateLimitsByLimitId: {}, rateLimits: bucket }), /absent/, 'pas de fallback silencieux vers un bucket différent');
+  bucket.primary.usedPercent = bucket.secondary.usedPercent = 100;
+  assert.equal(normalizeCodexQuota(codex).resetAt, new Date(later * 1000).toISOString());
+  assert.equal(normalizeCodexQuota(codex).remaining, 0);
+  for (const credits of [{ hasCredits: true }, { unlimited: true }]) assert.throws(() => normalizeCodexQuota({ rateLimits: { ...bucket, credits } }), /crédits supplémentaires/);
+  for (const usedPercent of [null, '10', -1, 101, NaN]) assert.throws(() => normalizeCodexQuota({ rateLimits: { primary: { usedPercent } } }), /invalide/);
+  assert.throws(() => normalizeCodexQuota({ rateLimits: { primary: { usedPercent: 10, resetsAt: 1 } } }), /périmée/);
+  assert.throws(() => normalizeCodexQuota({ rateLimits: {} }), /aucune fenêtre/);
+  const claude = { five_hour: { utilization: 4, resets_at: new Date(soon * 1000).toISOString() }, seven_day: { utilization: 34, resets_at: new Date(later * 1000).toISOString() }, seven_day_sonnet: { utilization: 85, resets_at: new Date(later * 1000).toISOString() } };
+  assert.equal(normalizeClaudeQuota(claude).remaining, 66);
+  assert.equal(normalizeClaudeQuota(claude, 'sonnet').remaining, 15);
+  assert.throws(() => normalizeClaudeQuota(claude, 'missing'), /invalide/);
+  assert.throws(() => normalizeClaudeQuota({ five_hour: { utilization: 100 }, extra_usage: { is_enabled: true } }), /crédits supplémentaires/);
+  assert.throws(() => normalizeClaudeQuota({ five_hour: { utilization: null } }), /invalide/);
+});
+
+test('source Codex: protocole natif simulé, erreurs expurgées, sortie bornée et timeout', async () => {
+  const fixture = fileURLToPath(new URL('./provider-quota.mjs', import.meta.url));
+  const read = (mode: string, timeoutMs = 1000) => readCodexQuota({ cmd: process.execPath, args: [fixture, mode], timeoutMs });
+  const result = await read('valid');
+  assert.equal(result.remaining, 20);
+  assert.equal(result.limit, 100);
+  assert.match(result.unit, /10080 min/);
+  for (const [mode, error] of [['error', /connexion ChatGPT/], ['oversized', /volumineuse/], ['malformed', /invalide/]] as const) {
+    await assert.rejects(read(mode), (e: Error) => error.test(e.message) && !e.message.includes('synthetic-secret'));
+  }
+  const start = performance.now();
+  await assert.rejects(read('hang', 50), /expirée/);
+  assert.ok(performance.now() - start < 1500);
+  await assert.rejects(readCodexQuota({ cmd: join(home, 'missing-quota-cli'), timeoutMs: 100 }), /indisponible/);
+  if (process.platform !== 'win32') {
+    const pidFile = join(home, 'quota-child.pid');
+    await assert.rejects(readCodexQuota({ cmd: process.execPath, args: [fixture, 'hang-child', pidFile], timeoutMs: 500 }), /expirée/);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    let running = true;
+    for (let attempt = 0; attempt < 20 && running; attempt++) {
+      try { process.kill(pid, 0); if (process.platform === 'linux' && readFileSync(`/proc/${pid}/stat`, 'utf8').includes(') Z ')) running = false; }
+      catch { running = false; }
+      if (running) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    if (running) process.kill(pid, 'SIGKILL');
+    assert.equal(running, false, 'le binaire natif enfant doit aussi être arrêté');
+  }
+});
+
+test('source Claude: identifiants locaux, endpoint fixe, lecture bornée et erreurs sans secret', async () => {
+  const credentialsPath = join(home, 'claude-quota-credentials.json');
+  writeFileSync(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: 'synthetic-quota-token', expiresAt: Date.now() + 60000 } }), { mode: 0o600 });
+  let called = 0;
+  const fetcher: typeof fetch = async (url, init) => {
+    called++;
+    assert.equal(String(url), 'https://api.anthropic.com/api/oauth/usage');
+    assert.equal(init?.redirect, 'error');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer synthetic-quota-token');
+    assert.equal(new Headers(init?.headers).get('anthropic-beta'), 'oauth-2025-04-20');
+    return Response.json({ five_hour: { utilization: 2, resets_at: new Date(Date.now() + 60000).toISOString() } });
+  };
+  assert.equal((await readClaudeQuota({ credentialsPath, fetcher })).remaining, 98);
+  assert.equal(called, 1);
+  for (const status of [401, 403, 429, 500]) {
+    await assert.rejects(readClaudeQuota({ credentialsPath, fetcher: async () => new Response('synthetic-quota-token', { status }) }), (e: Error) => !e.message.includes('synthetic-quota-token') && /Claude/.test(e.message));
+  }
+  await assert.rejects(readClaudeQuota({ credentialsPath, fetcher: async () => new Response('x'.repeat(70_000)) }), /volumineuse/);
+  await assert.rejects(readClaudeQuota({ credentialsPath, fetcher: async () => new Response('synthetic-quota-token') }), (e: Error) => !e.message.includes('synthetic-quota-token'));
+  await assert.rejects(readClaudeQuota({ credentialsPath, timeoutMs: 5, fetcher: async (_url, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('synthetic-quota-token')), { once: true }); setTimeout(() => {}, 10); }) }), /impossible ou expirée/);
+  writeFileSync(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: 'synthetic-quota-token', expiresAt: 1 } }));
+  await assert.rejects(readClaudeQuota({ credentialsPath, fetcher }), /expirée/);
+  assert.equal(called, 1, 'aucun appel réseau avec une connexion expirée');
+  await assert.rejects(readClaudeQuota({ credentialsPath: join(home, 'missing-credentials'), fetcher }), /absente ou illisible/);
+});
+
+test('sources de quotas: Cursor et OpenCode restent explicitement inconnus', () => {
+  const script = fileURLToPath(new URL('../src/quota-source.ts', import.meta.url));
+  for (const provider of ['cursor', 'opencode']) {
+    try { execFileSync(process.execPath, [script, provider], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); assert.fail('source non disponible acceptée'); }
+    catch (e: any) {
+      assert.equal(e.status, 1);
+      assert.equal(e.stdout, '');
+      assert.equal(JSON.parse(e.stderr).status, 'unknown');
+      assert.match(JSON.parse(e.stderr).error, /non prise en charge/);
+    }
+  }
 });
