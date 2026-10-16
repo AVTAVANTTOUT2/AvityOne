@@ -1,25 +1,79 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { guard, toast } from './ui';
 import { ToolDialog } from './Workbench';
+import { AgentCard, type ProbeState } from './AgentCard';
+import { createAgentProbeRequests } from './agentProbes';
+
+const probeRequests = createAgentProbeRequests(id => api(`/agents/${id}/probe`, {}));
+
+type ConfigurationDraft = { text: string; saved: string };
+export function receiveConfigurationDraft(draft: ConfigurationDraft | null, settings: unknown, submitted?: string): ConfigurationDraft {
+  const saved = JSON.stringify(settings, null, 2);
+  if (draft && draft.text !== draft.saved && draft.text !== submitted) return draft;
+  return { text: saved, saved };
+}
 
 export function Administration({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState('agents'), [settings, setSettings] = useState<any>(null), [status, setStatus] = useState<any>(null), [agents, setAgents] = useState<any[]>([]), [error, setError] = useState('');
-  const load = async () => { const [c, s, a] = await Promise.all([api('/config'), api('/administration'), api('/agents')]); setSettings(c); setStatus(s); setAgents(a); };
-  useEffect(() => { load().catch(e => setError(e.message)); }, []);
-  return <ToolDialog title="Administration" onClose={onClose}><nav className="tool-tabs" aria-label="Administration">{[['agents', 'Agents'], ['routing', 'Routage'], ['mcp', 'Serveurs MCP'], ['config', 'Configuration'], ['operations', 'Exploitation']].map(([id, label]) => <button key={id} className={`chip ${tab === id ? 'on' : ''}`} onClick={() => setTab(id)}>{label}</button>)}</nav>
-    {error && <p role="alert">{error}</p>}{!settings ? <p>Chargement…</p> : tab === 'agents' ? <Agents agents={agents} reload={load} /> : tab === 'routing' ? <Routing settings={settings} agents={agents} save={async patch => { setSettings(await api('/config', patch, 'PATCH')); toast('Règles enregistrées.'); }} />
-      : tab === 'mcp' ? <Mcp settings={settings} save={async patch => { setSettings(await api('/config', patch, 'PATCH')); toast('Serveurs enregistrés ; utilisés à la prochaine connexion d’agent.'); }} />
-        : tab === 'config' ? <Configuration settings={settings} reload={load} /> : <Operations status={status} reload={load} />}
+  const [draft, setDraft] = useState<ConfigurationDraft | null>(null), [saving, setSaving] = useState(false);
+  const savingRef = useRef(false), configRevision = useRef(0);
+  const dirty = !!draft && draft.text !== draft.saved, conflict = dirty && draft.saved !== JSON.stringify(settings, null, 2);
+  const mounted = useRef(true), [probes, setProbes] = useState<Record<string, ProbeState>>(() => Object.fromEntries(probeRequests.entries().map(([id]) => [id, { busy: true }])));
+  const receiveSettings = (value: any, submitted?: string) => { setSettings(value); setDraft(current => receiveConfigurationDraft(current, value, submitted)); };
+  const load = async () => {
+    const revision = configRevision.current;
+    const [c, s, a] = await Promise.all([api('/config'), api('/administration'), api('/agents')]);
+    if (revision === configRevision.current && !savingRef.current) receiveSettings(c);
+    setStatus(s); setAgents(a);
+  };
+  const saveSettings = async (patch: unknown, submitted?: string) => {
+    if (savingRef.current) throw new Error('Un enregistrement de configuration est déjà en cours.');
+    savingRef.current = true; setSaving(true); configRevision.current++;
+    try { receiveSettings(await api('/config', patch, 'PATCH'), submitted); }
+    finally { configRevision.current++; savingRef.current = false; setSaving(false); }
+  };
+  const close = () => {
+    if ((saving || dirty) && !confirm(saving ? 'Un enregistrement est encore en cours. Fermer l’administration ?' : 'Abandonner les modifications non enregistrées de la configuration ?')) return;
+    onClose();
+  };
+  useEffect(() => {
+    if (!dirty && !saving) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty, saving]);
+  const observeProbe = async (id: string, request: Promise<any>) => {
+    setProbes(current => ({ ...current, [id]: { busy: true } }));
+    try {
+      const health = await request;
+      if (!mounted.current) return;
+      setAgents(current => current.map(agent => agent.id === id ? { ...agent, health, installed: health.status !== 'missing' } : agent));
+      setProbes(current => ({ ...current, [id]: { busy: false } }));
+    } catch (e) { if (mounted.current) setProbes(current => ({ ...current, [id]: { busy: false, error: e instanceof Error ? e.message : 'erreur réseau' } })); }
+  };
+  const probe = (id: string) => observeProbe(id, probeRequests.run(id));
+  useEffect(() => {
+    mounted.current = true;
+    void probeRequests.resume(load, async (id, request) => { if (mounted.current) await observeProbe(id, request); }).catch(e => { if (mounted.current) setError(e.message); });
+    return () => { mounted.current = false; };
+  }, []);
+  return <ToolDialog title="Administration" onClose={close}><nav className="tool-tabs" aria-label="Administration">{[['agents', 'Agents'], ['routing', 'Routage'], ['mcp', 'Serveurs MCP'], ['config', 'Configuration'], ['operations', 'Exploitation']].map(([id, label]) => <button key={id} className={`chip ${tab === id ? 'on' : ''}`} onClick={() => setTab(id)}>{label}{id === 'config' && dirty ? ' · Modifiée' : ''}</button>)}</nav>
+    {error && <p role="alert">{error}</p>}{!settings ? <p>Chargement…</p> : tab === 'agents' ? <Agents agents={agents} probes={probes} probe={probe} reload={load} /> : tab === 'routing' ? <Routing settings={settings} agents={agents} save={async patch => { await saveSettings(patch); toast('Règles enregistrées.'); }} />
+      : tab === 'mcp' ? <Mcp settings={settings} save={async patch => { await saveSettings(patch); toast('Serveurs enregistrés ; utilisés à la prochaine connexion d’agent.'); }} />
+        : tab === 'config' ? draft && <Configuration draft={draft} saving={saving} conflict={conflict} onChange={text => setDraft({ ...draft, text })}
+          onReset={() => { if (confirm('Remplacer le brouillon par la configuration enregistrée ?')) setDraft(receiveConfigurationDraft(null, settings)); }}
+          onSave={async () => { if (conflict) throw new Error('La configuration a changé. Reprends la version enregistrée avant de modifier ce brouillon.'); await saveSettings(JSON.parse(draft.text), draft.text); toast('Configuration enregistrée. Hôte et port nécessitent un redémarrage.'); }} /> : <Operations status={status} reload={load} />}
   </ToolDialog>;
 }
 
-function Agents({ agents, reload }: { agents: any[]; reload: () => Promise<void> }) {
+function Agents({ agents, probes, probe, reload }: { agents: any[]; probes: Record<string, ProbeState>; probe: (id: string) => Promise<void>; reload: () => Promise<void> }) {
   const [operation, setOperation] = useState<any>(null), [input, setInput] = useState(''), [result, setResult] = useState<any>(null);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => { if (!operation || operation.state !== 'running') return; const timer = setInterval(() => api(`/agent-operations/${operation.id}`).then(setOperation, e => toast(e.message, true)), 1500); return () => clearInterval(timer); }, [operation?.id, operation?.state]);
-  return <div className="tool-stack">{agents.map(a => <article className="card tool-stack" key={a.id}><div className="row"><b className="grow">{a.name}</b><span>{a.installed ? 'Installé' : 'Non installé'}</span></div><div className="row wrap"><button className="chip" onClick={guard(async () => { await api(`/agents/${a.id}/probe`, {}); await reload(); })}>Vérifier connexion et disponibilité</button>
-    <button className="chip" disabled={!a.catalog || operation?.state === 'running'} onClick={guard(async () => { setOperation(await api(`/agents/${a.id}/install`, {})); await reload(); })}>Installer</button><button className="chip" disabled={!a.catalog || !a.installed || operation?.state === 'running'} onClick={guard(async () => setOperation(await api(`/agents/${a.id}/connect`, {})))}>Connecter</button></div>
-    <p>{a.strengths}</p>{a.health && <pre className="ctx">{JSON.stringify(a.health, null, 2)}</pre>}</article>)}
+  return <div className="tool-stack">{agents.map(a => <AgentCard key={a.id} agent={a} probe={probes[a.id]} now={now} operationBusy={operation?.state === 'running'} onProbe={() => { void probe(a.id); }}
+    onInstall={guard(async () => { setOperation(await api(`/agents/${a.id}/install`, {})); await reload(); })} onConnect={guard(async () => setOperation(await api(`/agents/${a.id}/connect`, {})))} />)}
     <p className="muted">Les quotas non fournis par l’agent restent inconnus. Installer télécharge le CLI du catalogue ; connecter lance son parcours d’authentification.</p>
     {operation && <section className="tool-stack"><b>{operation.action} · {operation.state}</b><pre className="terminal-output">{operation.output}</pre>{operation.state === 'running' && operation.action === 'connect' && <form className="row" onSubmit={guard(async e => { e.preventDefault(); await api(`/agent-operations/${operation.id}/input`, { input: input + '\n' }); setInput(''); })}><input className="input grow" type="password" autoComplete="off" aria-label="Réponse à la connexion de l’agent" value={input} onChange={e => setInput(e.target.value)} /><button className="btn">Transmettre au CLI</button></form>}<button className="chip" onClick={guard(reload)}>Actualiser les agents</button></section>}
     <details><summary>Évaluation comparative</summary><form className="tool-stack" onSubmit={guard(async e => { e.preventDefault(); const data = new FormData(e.currentTarget); setResult(await api('/benchmarks', { agents: data.getAll('agents'), prompt: data.get('prompt'), expected: data.get('expected') })); })}>
@@ -49,11 +103,12 @@ function Mcp({ settings, save }: { settings: any; save: (patch: any) => Promise<
     <div className="row"><button className="btn" type="button" onClick={() => setServers([...servers, { name: '', command: '', args: [], env: {}, enabled: true }])}>Ajouter un serveur MCP</button><button className="btn primary">Enregistrer</button></div>
   </form>;
 }
-function Configuration({ settings, reload }: { settings: any; reload: () => Promise<void> }) {
-  const [json, setJson] = useState(JSON.stringify(settings, null, 2));
-  return <form className="tool-stack" onSubmit={guard(async e => { e.preventDefault(); await api('/config', JSON.parse(json), 'PATCH'); await reload(); toast('Configuration enregistrée. Hôte et port nécessitent un redémarrage.'); })}>
+function Configuration({ draft, saving, conflict, onChange, onSave, onReset }: { draft: ConfigurationDraft; saving: boolean; conflict: boolean; onChange: (text: string) => void; onSave: () => Promise<void>; onReset: () => void }) {
+  return <form className="tool-stack" onSubmit={guard(async e => { e.preventDefault(); await onSave(); })}>
     <p>Configuration globale : agents, modèles, parallélisme, délais, budgets, commandes de validation et moteur de transcription. Les valeurs secrètes sont masquées et conservées si elles ne sont pas remplacées.</p>
-    <textarea className="code-editor" aria-label="Configuration globale JSON" spellCheck={false} value={json} onChange={e => setJson(e.target.value)} /><button className="btn primary">Valider et enregistrer</button>
+    {conflict && <p role="alert">La configuration enregistrée a changé pendant cette modification. Conserve une copie de ton brouillon, puis reprends la version enregistrée pour éviter d’écraser ces changements.</p>}
+    <textarea className="code-editor" aria-label="Configuration globale JSON" spellCheck={false} disabled={saving} value={draft.text} onChange={e => onChange(e.target.value)} />
+    <div className="row wrap"><button className="btn primary" disabled={saving || conflict}>{saving ? 'Enregistrement…' : 'Valider et enregistrer'}</button><button className="btn" type="button" disabled={saving} onClick={onReset}>Reprendre la configuration enregistrée</button></div>
   </form>;
 }
 function Operations({ status, reload }: { status: any; reload: () => Promise<void> }) {

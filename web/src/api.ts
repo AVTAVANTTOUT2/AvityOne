@@ -29,12 +29,13 @@ export const signalOf = (a?: Act): Signal | null => (!a ? null : a.waiting ? 'wa
 
 export class ApiError extends Error { status = 0; }
 
-export async function api<T = any>(path: string, body?: unknown, method?: string): Promise<T> {
+export async function api<T = any>(path: string, body?: unknown, method?: string, signal?: AbortSignal): Promise<T> {
   const m = method ?? (body === undefined ? 'GET' : 'POST');
   const r = await fetch('/api' + path, {
     method: m,
     headers: m === 'GET' ? {} : { 'content-type': 'application/json' },
     body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
+    signal,
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {

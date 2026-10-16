@@ -15,6 +15,7 @@ import { canNotify, notifyOn, setNotify, systemNotify } from './notify';
 import { Workbench } from './Workbench';
 import { encodeFile } from './uploads';
 import { Administration } from './Administration';
+import { sessionDirection } from './shortcuts';
 
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -468,9 +469,10 @@ function Workspace() {
   }, [sessions, openSession]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+      const direction = sessionDirection(e, !!document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'));
+      if (!direction) return;
       e.preventDefault();
-      step(e.key === 'ArrowUp' ? -1 : 1);
+      step(direction);
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
