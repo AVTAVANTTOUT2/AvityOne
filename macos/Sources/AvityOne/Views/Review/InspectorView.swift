@@ -81,7 +81,7 @@ struct ChangesPane: View {
               .padding(.horizontal, 12)
             }
             if (staged?.files.isEmpty ?? true) && (unstaged?.files.isEmpty ?? true) && (unstaged?.untracked.isEmpty ?? true) {
-              ContentUnavailableView("Aucun changement", systemImage: "checkmark.circle", description: Text(thread.git?.ahead ?? 0 > 0 ? "\(thread.git!.ahead) commit(s) à pousser." : "Le dossier de travail est propre."))
+              ContentUnavailableView("Aucun changement", systemImage: "checkmark.circle", description: Text(cleanHint))
             }
           }
           .padding(.vertical, 12)
@@ -103,6 +103,11 @@ struct ChangesPane: View {
         if let target = confirmRevert { select(path: target.path, hunk: target.hunk, action: "reject", staged: false) }
       }
     } message: { Text("Le contenu modifié sera perdu.") }
+  }
+
+  private var cleanHint: String {
+    let ahead: Int = thread.git?.ahead ?? 0
+    return ahead > 0 ? "\(ahead) commit(s) à pousser." : "Le dossier de travail est propre."
   }
 
   private var header: some View {

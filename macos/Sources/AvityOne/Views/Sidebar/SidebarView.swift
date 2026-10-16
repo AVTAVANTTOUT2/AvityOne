@@ -169,12 +169,18 @@ struct SidebarFooter: View {
   @Environment(AppModel.self) private var app
   @Binding var showArchived: Bool
 
+  private var status: String {
+    if !app.isLocal { return app.link == .open ? "Connecté" : "Reconnexion…" }
+    guard let port = app.endpoint?.port else { return "Moteur local" }
+    return "Moteur local · port \(port)"
+  }
+
   var body: some View {
     HStack(spacing: 8) {
       Circle().fill(app.link == .open ? Palette.green : Palette.amber).frame(width: 7, height: 7)
       VStack(alignment: .leading, spacing: 0) {
         Text(app.preferences.activeProfile.name).font(.caption.weight(.medium))
-        Text(app.isLocal ? "Moteur local\(app.endpoint.map { " · port \($0.port)" } ?? "")" : (app.link == .open ? "Connecté" : "Reconnexion…"))
+        Text(status)
           .font(.caption2).foregroundStyle(.secondary)
       }
       Spacer()

@@ -15,7 +15,7 @@ struct ConnectionsSettings: View {
         LabeledContent("Moteur") {
           HStack {
             Circle().fill(app.isLocal && app.connection == .ready ? Palette.green : .secondary).frame(width: 8, height: 8)
-            Text(app.isLocal ? (app.connection == .ready ? "En marche\(app.endpoint.map { " sur 127.0.0.1:\($0.port)" } ?? "")" : "Arrêté") : "Inactif (serveur distant actif)")
+            Text(engineStatus)
           }
         }
         LabeledContent("Données") {
@@ -38,9 +38,7 @@ struct ConnectionsSettings: View {
             }
           }))
           .disabled(network?["installed"]?.bool != true)
-          Text(network?["installed"]?.bool == true
-               ? "`tailscale serve` publie l’interface web du moteur sur ton tailnet\(network?["hostname"]?.string.map { " : https://\($0.hasSuffix(".") ? String($0.dropLast()) : $0)" } ?? "")."
-               : "Installe et connecte Tailscale pour utiliser AvityOne depuis ton téléphone (PWA).")
+          Text(tailscaleHint)
             .font(.caption).foregroundStyle(.secondary)
         }
       }
@@ -71,6 +69,20 @@ struct ConnectionsSettings: View {
     .formStyle(.grouped)
     .sheet(isPresented: $showLog) { EngineLogView() }
     .task { if app.isLocal { network = try? await app.client?.administration()["network"] } }
+  }
+
+  private var engineStatus: String {
+    guard app.isLocal else { return "Inactif (serveur distant actif)" }
+    guard app.connection == .ready else { return "Arrêté" }
+    guard let port = app.endpoint?.port else { return "En marche" }
+    return "En marche sur 127.0.0.1:\(port)"
+  }
+
+  private var tailscaleHint: String {
+    guard network?["installed"]?.bool == true else { return "Installe et connecte Tailscale pour utiliser AvityOne depuis ton téléphone (PWA)." }
+    var host: String = network?["hostname"]?.string ?? ""
+    if host.hasSuffix(".") { host.removeLast() }
+    return host.isEmpty ? "`tailscale serve` publie l’interface web du moteur sur ton tailnet." : "`tailscale serve` publie l’interface web du moteur sur https://\(host)."
   }
 
   private func add() {

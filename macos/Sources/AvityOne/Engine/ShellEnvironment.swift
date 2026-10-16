@@ -31,17 +31,19 @@ enum ShellEnvironment {
       process.standardError = FileHandle.nullDevice
       process.standardInput = FileHandle.nullDevice
       guard (try? process.run()) != nil else { return [] }
+      final class Output: @unchecked Sendable { var data = Data() }
       let done = DispatchSemaphore(value: 0)
-      var data = Data()
+      let read = Output()
+      let handle = output.fileHandleForReading
       DispatchQueue.global().async {
-        data = output.fileHandleForReading.readDataToEndOfFile()
+        read.data = handle.readDataToEndOfFile()
         done.signal()
       }
       if done.wait(timeout: .now() + 5) == .timedOut {
         process.terminate()
         _ = done.wait(timeout: .now() + 1)
       }
-      let text = String(decoding: data, as: UTF8.self)
+      let text = String(decoding: read.data, as: UTF8.self)
       guard let start = text.range(of: marker), let end = text.range(of: marker, range: start.upperBound..<text.endIndex) else { return [] }
       return text[start.upperBound..<end.lowerBound].split(separator: ":").map(String.init).filter { !$0.isEmpty }
     }

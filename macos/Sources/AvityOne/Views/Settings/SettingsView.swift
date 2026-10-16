@@ -100,7 +100,7 @@ struct AgentsSettings: View {
             }
           }
         }
-        Text(app.isLocal ? "Les CLI s’installent dans \(app.engine.tools.path), sans sudo. Cursor et l’installateur natif de Claude utilisent ~/.local/bin." : "Installations et connexions s’exécutent sur le serveur distant.")
+        Text(installHint)
           .font(.caption).foregroundStyle(.secondary)
       }
       .padding(18)
@@ -109,6 +109,12 @@ struct AgentsSettings: View {
     .sheet(item: $login) { agent in
       LoginTerminalSheet(title: "Connexion à \(agent.name)", command: agent.catalog?.loginCommand ?? []) { probe(agent.id) }
     }
+  }
+
+  private var installHint: String {
+    guard app.isLocal else { return "Installations et connexions s’exécutent sur le serveur distant." }
+    let tools: String = app.engine.tools.path
+    return "Les CLI s’installent dans \(tools), sans sudo. Cursor et l’installateur natif de Claude utilisent ~/.local/bin."
   }
 
   private func load() async {

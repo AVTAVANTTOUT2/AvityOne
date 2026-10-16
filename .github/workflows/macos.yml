@@ -15,6 +15,7 @@ concurrency:
 jobs:
   engine-macos:
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -28,6 +29,7 @@ jobs:
 
   app:
     runs-on: macos-15
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: macos
@@ -38,8 +40,9 @@ jobs:
           node-version: 24
       - name: Toolchain
         run: swift --version && xcodebuild -version
+      # An expression the type checker cannot solve fast fails here with its line, instead of stalling the build.
       - name: Build
-        run: swift build
+        run: swift build -Xswiftc -Xfrontend -Xswiftc -solver-expression-time-threshold=20 -Xswiftc -Xfrontend -Xswiftc -warn-long-function-bodies=2000
       - name: Tests (dont l'intégration avec le moteur réel)
         env:
           AVITY_ENGINE_TEST: '1'
