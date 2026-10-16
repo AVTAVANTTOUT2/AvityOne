@@ -1861,3 +1861,37 @@ test('administration: une sonde en vol survit à la réouverture sans doublon et
   finishLoad(); await resumed;
   assert.deepEqual(displayed, health, 'une sonde terminée pendant le chargement remplace le catalogue ancien');
 });
+
+test('administration: brouillon JSON conservé, réponse enregistrée canonique et conflit explicite', async () => {
+  const require = createRequire(import.meta.url), { transformWithOxc } = await import('vite');
+  const { createElement } = require('react'), { renderToStaticMarkup } = require('react-dom/server');
+  const compiled = await transformWithOxc(readFileSync(new URL('../web/src/Administration.tsx', import.meta.url), 'utf8'), 'Administration.tsx', { jsx: { runtime: 'classic' } });
+  // Only the draft transition and controlled form are exercised; unrelated UI dependencies stay unloaded.
+  const code = compiled.code.replace(/^import .*?;$/gm, '');
+  const logic = await import('data:text/javascript;base64,' + Buffer.from(`import * as React from ${JSON.stringify(pathToFileURL(require.resolve('react')).href)};
+    const createAgentProbeRequests = () => ({}); const guard = action => action;
+    ${code}
+    export { Configuration };`).toString('base64'));
+  const saved = { concurrency: 3, secret: '••••••' }, updated = { concurrency: 4, secret: '••••••' };
+  let draft = logic.receiveConfigurationDraft(null, saved);
+  assert.equal(draft.text, JSON.stringify(saved, null, 2)); assert.equal(draft.text, draft.saved);
+  draft = { ...draft, text: '{"concurrency":5,"secret":"synthetic-new-secret"}' };
+  assert.deepEqual(logic.receiveConfigurationDraft(draft, saved), draft, 'changer d’onglet/recharger conserve le brouillon');
+  assert.deepEqual(logic.receiveConfigurationDraft(draft, updated), draft, 'une nouvelle configuration ne détruit pas les modifications locales');
+  assert.notEqual(draft.saved, JSON.stringify(updated, null, 2), 'le brouillon détecte une base enregistrée différente');
+  const invalid = { ...draft, text: '{' };
+  assert.deepEqual(logic.receiveConfigurationDraft(invalid, updated), invalid, 'même un JSON incomplet reste éditable');
+  const submitted = draft.text, response = { concurrency: 5, secret: '••••••', defaultsApplied: true };
+  const accepted = logic.receiveConfigurationDraft(draft, response, submitted);
+  assert.equal(accepted.text, JSON.stringify(response, null, 2)); assert.equal(accepted.text, accepted.saved);
+  assert.ok(!accepted.text.includes('synthetic-new-secret'), 'le retour masqué remplace le secret saisi après sauvegarde');
+  assert.equal(logic.receiveConfigurationDraft(accepted, updated).text, JSON.stringify(updated, null, 2));
+  const props = { draft, saving: false, conflict: false, onChange() {}, onSave: async () => {}, onReset() {} };
+  const render = (extra: any = {}) => renderToStaticMarkup(createElement(logic.Configuration, { ...props, ...extra }));
+  assert.match(render(), /synthetic-new-secret/);
+  const pending = render({ saving: true });
+  assert.match(pending, /Enregistrement…/); assert.equal((pending.match(/disabled=""/g) ?? []).length, 3);
+  const conflict = render({ conflict: true });
+  assert.match(conflict, /role="alert"/); assert.match(conflict, /disabled="">Valider et enregistrer/);
+  assert.match(conflict, /Reprendre la configuration enregistrée/);
+});
