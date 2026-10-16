@@ -39,7 +39,7 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Résumés + mémoire** | Toutes les 4 réponses, à l'ouverture d'une nouvelle session, ou sur « Résumer » : un modèle léger (Haiku) résume la session et extrait décisions, conventions, pièges, faits et todos. Le tout est dédupliqué. |
 | **Mémoire partagée MCP** | Chaque agent reçoit le serveur MCP `avity` (`avity_memory_search`, `avity_memory_add`, `avity_recent_sessions`). Ce que Codex apprend, Claude le sait. |
 | **Connaissances** | Indexation incrémentale du code et des documents, recherche FTS5 + LSA locale, consolidation, faits structurés contradictoires ou périmés, édition, historique/restauration, export Markdown et graphe temporel. Import PDF/bureautique et ouverture des sources originales. |
-| **Espace de travail** | Explorateur et éditeur de fichiers, terminal avec entrée/sortie, diffs avant/après staging, sélection ou annulation par fichier/bloc et export du contexte du dépôt pour revue. Les chemins restent dans l'espace du projet ou de son worktree. |
+| **Espace de travail** | Explorateur et éditeur de fichiers, terminal avec entrée/sortie, diffs avant/après staging (fichiers non suivis compris), sélection ou annulation par fichier/bloc, commit, push et création de pull request (GitHub CLI `gh`), export du contexte du dépôt pour revue. Les chemins restent dans l'espace du projet ou de son worktree. |
 | **Projets** | Recherche, renommage, archivage, retrait sans effacer les fichiers, sélecteur de dossiers du serveur, édition du brief et de `AGENTS.md`. |
 | **Fichiers et médias** | Pièces jointes par sélection ou glisser-déposer, blocs ACP image/audio/ressource et rendu des réponses multimédias. Les pièces suivent la modification, la régénération et la bifurcation des conversations. |
 | **Mobile et dictée** | PWA installable, options d'agent et exécution parallèle sur mobile, six langues de dictée. Le moteur configuré sur le serveur est prioritaire ; le repli vers la reconnaissance du navigateur est annoncé lorsqu'aucun moteur n'est configuré. |
@@ -48,6 +48,7 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Sessions** | Renommer, épingler, dupliquer, archiver, supprimer (menu « ⋯ » de l'en-tête). Bifurquer depuis n'importe quelle réponse, modifier et renvoyer un message, régénérer la dernière réponse (même agent ou un autre), copier un message, une réponse ou un bloc de code. Recherche plein texte dans toutes les conversations du projet, avec saut au message trouvé. Export Markdown. Un brouillon par session, conservé sur le serveur. Alt+↑ / Alt+↓ et l'historique du navigateur pour passer d'une session à l'autre ; les raccourcis sont suspendus lorsqu'un dialogue est ouvert. |
 | **Activité et notifications** | Pastilles d'activité par session et par projet (en cours, validation requise, terminé ou échoué sans avoir été vu), compteur dans le titre de l'onglet, toasts et notifications système (cloche de l'en-tête, HTTPS ou localhost) de fin, d'échec et d'autorisation en attente. Bandeau de déconnexion avec reconnexion et resynchronisation automatiques. Les erreurs de chargement du contexte et de la mémoire sont signalées dans la session et les panneaux. |
 | **Permissions** | Auto-approbation configurable. La validation de plan et les éditions en mode plan te reviennent toujours. |
+| **Application macOS** | App SwiftUI native (macOS 14+, Apple Silicon) : les agents travaillent directement sur le Mac. Moteur embarqué sur 127.0.0.1, installation et connexion des CLI dans un vrai terminal, autorisations macOS, notifications actionnables, revue façon Codex (blocs, commentaires en ligne, commit, push, PR), terminal PTY, palette ⌘K, barre de menus, dictée sur l'appareil, serveurs distants. Voir [docs/macos.md](docs/macos.md). |
 
 ## Installation (Debian 13)
 
@@ -67,6 +68,20 @@ opencode auth login
 ```
 
 Le token d'accès à l'UI se lit avec `jq -r .token ~/.avityone/config.json`.
+
+## Application macOS
+
+L'app SwiftUI fait travailler les agents **directement sur le Mac**, comme Codex. Elle embarque Node 24 et le moteur
+`src/` (le même que sur les VM), le lance sur `127.0.0.1` et l'arrête en quittant. Le DMG signé ad hoc est produit par
+le workflow **macOS** (artefact `AvityOne-macOS`), ou localement :
+
+```bash
+cd macos && bash scripts/build-app.sh && open build/AvityOne.app
+```
+
+Le démarrage guidé règle les autorisations, installe les Command Line Tools et les quatre CLI, et connecte les agents
+dans un vrai terminal. Il ouvre ensuite ton premier projet. Données dans `~/Library/Application Support/AvityOne/`.
+Installation, autorisations, emplacements, serveurs distants et limites : [docs/macos.md](docs/macos.md).
 
 ## Déploiement continu : preprod → prod
 
@@ -234,6 +249,10 @@ validées ; les valeurs sensibles sont masquées. Un changement d'adresse ou de 
 | `budgets` | `{ "dailyTokens": 0, "dailyCostUsd": 0, "requireUsage": false }`. Zéro désactive le plafond ; seules les métriques rapportées sont comptées. `requireUsage` bloque les exécutions suivantes si un plafond configuré ne peut plus être vérifié. |
 | `transcription` | `{ "command": "", "args": [] }` : moteur STT serveur désactivé tant qu'aucune commande n'est configurée. |
 
+Variables d'environnement, jamais écrites dans `config.json` : `AVITY_HOME` (dossier des données), `AVITY_HOST` et
+`AVITY_PORT` (adresse d'écoute, prioritaires sur `host` et `port`), `AVITY_EMBEDDED=1` (le moteur s'arrête, avec ses
+agents, quand son entrée standard se ferme : c'est ainsi que l'app macOS le pilote).
+
 Un worktree est un checkout neuf : les fichiers ignorés (`.env`, secrets, caches…) ne sont pas copiés. La préparation
 automatique installe les dépendances npm sans scripts d'installation ; configure une commande adaptée si le projet en
 exige. Les autres piles nécessitent des commandes de préparation et de validation explicites.
@@ -280,7 +299,7 @@ l'administration. Avant un commit : `npm run check && npm test && npm run build`
 | [`src/knowledge.ts`](src/knowledge.ts) | Indexation incrémentale, extraction documentaire, historique, faits et graphe temporel |
 | [`src/projects.ts`](src/projects.ts) | Cycle de vie des projets, chemins sûrs, dossiers, brief et instructions |
 | [`src/worktree.ts`](src/worktree.ts) | Worktrees, préparation, commandes annulables, diffs et blocs de fusion |
-| [`src/workspace.ts`](src/workspace.ts) | Explorateur/éditeur, staging et rejet des changements, contexte du dépôt, terminaux |
+| [`src/workspace.ts`](src/workspace.ts) | Explorateur/éditeur, staging et rejet des changements, état git, commit, push et PR, contexte du dépôt, terminaux |
 | [`src/router.ts`](src/router.ts) | Routage par règles, performances ou LLM et candidats de bascule |
 | [`src/agents.ts`](src/agents.ts) | Catalogue, installation/connexion, disponibilité, lecture des quotas, commandes natives et évaluations |
 | [`src/admin.ts`](src/admin.ts) | Usage/budgets/quotas/traces, sauvegarde/restauration et accès Tailscale |
@@ -293,6 +312,9 @@ l'administration. Avant un commit : `npm run check && npm test && npm run build`
 | [`src/server.ts`](src/server.ts) | API HTTP, SSE, UI statique, auth |
 | [`web/src/`](web/src/) | UI React : `App`, `Feed`, `Composer` et `dictation`, `Sidebar`, `SessionMenu`, `shortcuts`, `Panel`, `Workbench` (outils), `Administration`, `AgentCard` et `agentProbes`, `Media`, `uploads`, `brand`, `icons`, `ui` |
 | [`web/public/`](web/public/) | Manifest PWA, service worker et écran hors ligne sans cache de données privées |
+| [`macos/Sources/AvityKit/`](macos/Sources/AvityKit/) | Bibliothèque Swift du contrat HTTP+SSE : modèles, client, flux d'événements, fil, diffs |
+| [`macos/Sources/AvityOne/`](macos/Sources/AvityOne/) | App SwiftUI : moteur embarqué (`Engine/`), autorisations et services système (`System/`), vues (`Views/`) |
+| [`macos/scripts/build-app.sh`](macos/scripts/build-app.sh) | `AvityOne.app` et DMG : Swift, Node 24 épinglé, moteur, UI web, icône, signature ad hoc |
 
 ## Feuille de route et versions
 

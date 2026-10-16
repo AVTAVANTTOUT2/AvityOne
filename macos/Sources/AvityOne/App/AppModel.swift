@@ -160,7 +160,7 @@ enum InspectorTab: String, CaseIterable, Identifiable {
     }, onLink: { link in
       DispatchQueue.main.async { MainActor.assumeIsolated { AppModel.shared.linkChanged(link) } }
     }, onReconnect: {
-      DispatchQueue.main.async { MainActor.assumeIsolated { Task { await AppModel.shared.resync() } } }
+      Task { @MainActor in await AppModel.shared.resync() }
     })
     self.stream = stream
     stream.start()

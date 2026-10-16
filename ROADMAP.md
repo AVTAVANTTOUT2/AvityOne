@@ -16,6 +16,7 @@ Les lignes « Pistes » renvoient aux briques open source relevées dans
   l'historique des conversations, export Markdown, brouillons propres à chaque session, bifurcation, modification et
   renvoi des messages, régénération, copie des réponses et des blocs de code, navigation entre sessions ; activité
   des sessions en arrière-plan, notifications, état de la connexion, signalement des erreurs de mémoire et de contexte.
+- **Application macOS (non publiée)** : app SwiftUI native avec moteur embarqué, voir [docs/macos.md](docs/macos.md).
 - **Complément non publié** : orchestration durable, plans éditables et dépendances, fusions contrôlées, outils du
   dépôt, connaissance hybride et versionnée, administration, multimodalité, PWA/dictée et commandes CLI dédiées.
 
@@ -187,6 +188,28 @@ Les cartes distinguent les quotas disponibles, épuisés, inconnus et expirés ;
 devient pas un faux zéro. La vérification explicite montre son attente et ses erreurs, sans doublon simultané par agent.
 Les sauvegardes couvrent SQLite et les pièces jointes, pas les dossiers des projets ni la configuration. La restauration
 exige un schéma compatible et un redémarrage après maintenance. HTTPS repose sur un hôte Tailscale déjà connecté.
+
+## Application macOS
+
+- [x] Application SwiftUI native, moteur embarqué sur la boucle locale et arrêté avec l'app.
+- [x] Installation des CLI d'agents et connexion dans un vrai terminal, outils de développement Apple vérifiés.
+- [x] Autorisations macOS guidées : notifications, micro, reconnaissance vocale, capture d'écran, accès au disque.
+- [x] Notifications avec validation des autorisations, badge du Dock et barre de menus.
+- [x] Revue des changements par bloc, commentaires en ligne, commit, push et pull request.
+- [x] Terminal PTY intégré, « Ouvrir dans » un éditeur ou un terminal, palette de commandes, fenêtres détachées.
+- [x] Dictée sur l'appareil, priorité au moteur de transcription configuré.
+- [x] Connexion à des serveurs AvityOne distants.
+- [ ] Automatisations planifiées (prompt, agent, horaire, boîte de résultats).
+- [ ] Actions de projet (lancer l'app, les tests) depuis la barre d'outils.
+- [ ] Mises à jour automatiques, signature Developer ID et notarisation.
+- [ ] Binaire universel (Intel).
+
+Pistes : app Codex (automatisations, skills, environnements locaux), Sparkle (mises à jour).
+
+Portée : la CI compile et empaquette l'app, lance un test de fumée du bundle, les tests du moteur sur macOS et
+l'intégration de la bibliothèque Swift avec le vrai moteur et des agents simulés. L'interface, les autorisations
+système et les vrais CLI restent à qualifier sur un Mac. Signature ad hoc : Gatekeeper demande une ouverture
+explicite au premier lancement. ACP ne permet pas d'injecter un message dans un tour en cours : il part en file.
 
 ## Interface en ligne de commande
 

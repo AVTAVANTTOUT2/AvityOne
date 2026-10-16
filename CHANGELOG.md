@@ -7,6 +7,22 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Ajouté
 
+- **Application macOS** native en SwiftUI (macOS 14+, Apple Silicon) : les agents travaillent directement sur le Mac.
+  - Moteur Node 24 embarqué sur 127.0.0.1, arrêté avec l'app, PATH complet et commande `avity`.
+  - Démarrage guidé : autorisations, Command Line Tools, installation des CLI et connexion dans un vrai terminal.
+  - Fils et projets, compositeur (agent, mode, modèle, effort, approbation, worktree, pièces jointes, capture
+    d'écran, dictée sur l'appareil, commandes `/`).
+  - Notifications avec validation des autorisations, badge du Dock et barre de menus.
+  - Revue façon Codex : blocs, commentaires en ligne envoyés à l'agent, commit, push, PR.
+  - Panneaux fusion, plan, fichiers, mémoire et contexte ; terminal PTY ; « Ouvrir dans » ; palette ⌘K ; fenêtres
+    détachées.
+  - Réglages complets et serveurs distants.
+  - DMG signé ad hoc construit par la CI macOS, qui exécute aussi les tests du moteur et un test de fumée du bundle.
+- Variables `AVITY_HOST`, `AVITY_PORT` (adresse d'écoute, jamais enregistrée) et `AVITY_EMBEDDED` (arrêt du moteur
+  à la fermeture de son entrée standard).
+- Revue : fichiers non suivis sélectionnables, état git de la session, commit, push et création de pull request
+  avec GitHub CLI.
+- Catalogue des agents : présence du CLI de connexion et commande de connexion, pour la lancer dans un terminal.
 - Quotas Cursor issus des compteurs natifs, avec réserves distinctes et prise en compte des crédits et restrictions.
 - Vérification du contexte anonyme OpenCode : modèle global et tarif catalogue nul vérifiés, plafond non publié signalé explicitement.
 - Détails fournisseur persistés et délai configurable par source de quota, de 1 à 30 secondes.
@@ -115,6 +131,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- Le serveur MCP mémoire reçoit `AVITY_HOME` : un agent qui filtre l'environnement ne lui fait plus créer de
+  `~/.avityone` parasite avec un jeton.
 - La fusion d'un worktree n'est plus impossible avec un seul agent installé : il relit alors son propre travail.
 - Un document importé (`.avity/imports/`) ou un brief édité dans l'atelier ne bloque plus la fusion : tout `.avity/`
   est exclu du `git status` du projet, y compris dans les dépôts préparés par une version précédente.

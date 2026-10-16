@@ -332,7 +332,10 @@ struct AdvancedSettings: View {
 
         GroupBox {
           VStack(alignment: .leading, spacing: 8) {
-            Button("Changer le jeton d’accès") { rotate() }
+            HStack {
+              Button("Copier le jeton d’accès") { copyToPasteboard(app.client?.token ?? ""); app.toast("Jeton copié.") }
+              Button("Changer le jeton d’accès") { rotate() }
+            }
             Text("Révoque les autres accès (navigateurs, CLI, téléphones) : ils devront se reconnecter.").font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("Usage, budgets et quotas", isExpanded: $showUsage) {
               Text(admin?["usage"]?.pretty() ?? "").font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)

@@ -269,7 +269,10 @@ test('parallel: dependencies serialize overlapping files, pass results, synthesi
   const item = await hub.parallel(parent.id);
   assert.deepEqual(item.children.map((c: any) => c.agent), ['fake', 'fake2', 'fake'], 'router picks each task\'s agent');
   const card = () => hub.snapshot(parent.id).items.find((i: any) => i.id === item.id);
-  await waitFor(() => card().children.every((c: any) => c.status === 'done'));
+  await waitFor(() => card().children.every((c: any) => c.status === 'done')).catch((e) => {
+    const state = card().children.map((c: any) => ({ task: c.taskId, status: c.status, jobs: hub.jobs(c.id).map((j: any) => [j.status, j.error]), last: hub.snapshot(c.id).items.at(-1) }));
+    throw new Error(`${e.message} : ${JSON.stringify(state)}`);
+  });
   const kids = card().children;
   const wt = (k: any) => join(repo, '.avity', 'worktrees', k.id);
   assert.ok(existsSync(join(wt(kids[0]), 'a.txt')) && existsSync(join(wt(kids[1]), 'b.txt')));
