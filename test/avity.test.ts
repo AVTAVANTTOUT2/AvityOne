@@ -9,9 +9,21 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { normalizeCursorQuota, readCursorQuota, type CursorReadings } from '../src/cursor-quota.ts';
 import { cursorMonthly, cursorWeekly } from './cursor-quota-fixtures.ts';
+import { sessionDirection } from '../web/src/shortcuts.ts';
 import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
+
+test('navigation: les raccourcis de session ne démontent pas un dialogue avec un brouillon', () => {
+  const down = { key: 'ArrowDown', altKey: true, ctrlKey: false, metaKey: false, shiftKey: false };
+  assert.equal(sessionDirection(down, true), 0);
+  assert.equal(sessionDirection({ ...down, key: 'ArrowUp' }, true), 0);
+  assert.equal(sessionDirection(down, false), 1);
+  assert.equal(sessionDirection({ ...down, key: 'ArrowUp' }, false), -1);
+  for (const extra of [{ altKey: false }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { key: 'Enter' }]) {
+    assert.equal(sessionDirection({ ...down, ...extra }, false), 0);
+  }
+});
 process.env.AVITY_HOME = home;
 const fake = fileURLToPath(new URL('./fake-agent.mjs', import.meta.url));
 writeFileSync(join(home, 'config.json'), JSON.stringify({
