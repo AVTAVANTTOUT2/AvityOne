@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, unlinkSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +12,7 @@ import { cursorMonthly, cursorWeekly } from './cursor-quota-fixtures.ts';
 import { sessionDirection } from '../web/src/shortcuts.ts';
 import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
 import { createRequire } from 'node:module';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { createAgentProbeRequests } from '../web/src/agentProbes.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
@@ -941,6 +942,80 @@ test('workspace: quoted Unicode paths keep their selectable diff hunks', async (
   assert.equal(git('diff'), ''); assert.match(git('diff', '--cached'), /modification/);
 });
 
+test('git: new files are selectable, commit, push to origin and pull request without leaking credentials', async () => {
+  const { workspaceDiff, selectChange, gitStatus, commitChanges, pushBranch, pullRequest } = await import('../src/workspace.ts');
+  const dir = gitRepo(), remote = mkdtempSync(join(tmpdir(), 'avity-remote-'));
+  git(remote, 'init', '-q', '--bare');
+  await assert.rejects(() => gitStatus(remote), /pas un dépôt/);
+  writeFileSync(join(dir, 'nouveau.txt'), 'créé par un agent\n');
+  const diff = await workspaceDiff(dir);
+  assert.deepEqual(diff.untracked, ['nouveau.txt']);
+  await assert.rejects(() => selectChange(dir, { path: 'nouveau.txt', action: 'reject', revision: diff.revision }), /non suivi/);
+  assert.deepEqual((await selectChange(dir, { path: 'nouveau.txt', action: 'accept', revision: diff.revision })).untracked, []);
+  await assert.rejects(() => commitChanges(dir, { message: '  ' }), /Message/);
+  assert.equal((await commitChanges(dir, { message: 'feat: nouveau fichier' })).clean, true);
+  assert.equal(git(dir, 'log', '-1', '--format=%s'), 'feat: nouveau fichier');
+  await assert.rejects(() => commitChanges(dir, { message: 'vide' }), /Aucune modification/);
+  await assert.rejects(() => pushBranch(dir), /origin/);
+  git(dir, 'remote', 'add', 'origin', 'https://jeton-secret@example.invalid/depot.git');
+  assert.equal((await gitStatus(dir)).remote, 'https://example.invalid/depot.git');
+  git(dir, 'remote', 'set-url', 'origin', remote);
+  writeFileSync(join(dir, 'README.md'), 'tout\n');
+  mkdirSync(join(dir, '.avity')); writeFileSync(join(dir, '.avity', 'brief.md'), 'brief local\n');
+  await commitChanges(dir, { message: 'docs: tout', all: true });
+  assert.equal(git(dir, 'ls-files', '.avity'), '', 'AvityOne data stays out of the commit');
+  const pushed = await pushBranch(dir);
+  assert.equal(pushed.branch, 'main'); assert.equal(pushed.upstream, 'origin/main'); assert.equal(pushed.ahead, 0);
+  assert.equal(git(remote, 'rev-parse', 'main'), git(dir, 'rev-parse', 'HEAD'));
+  const saved = process.env.PATH, bin = mkdtempSync(join(tmpdir(), 'avity-gh-'));
+  try {
+    process.env.PATH = join(home, 'no-binaries');
+    await assert.rejects(() => pullRequest(dir, { title: 'Ajout' }), /gh/);
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(bin, 'args')}'\necho https://github.com/o/r/pull/7\n`, { mode: 0o755 });
+    process.env.PATH = `${bin}${delimiter}${saved}`;
+    await assert.rejects(() => pullRequest(dir, { title: '' }), /Titre/);
+    assert.equal((await pullRequest(dir, { title: 'Ajout', body: 'Détails' })).url, 'https://github.com/o/r/pull/7');
+    assert.deepEqual(readFileSync(join(bin, 'args'), 'utf8').trim().split('\n'), ['pr', 'create', '--head', 'main', '--title', 'Ajout', '--body', 'Détails']);
+  } finally { process.env.PATH = saved; }
+});
+
+test('engine: AVITY_HOST/AVITY_PORT choose the address without being saved, embedded mode stops when stdin closes', async () => {
+  const { listenAddress } = await import('../src/config.ts');
+  const before = process.env.AVITY_PORT;
+  try { process.env.AVITY_PORT = '0'; assert.throws(() => listenAddress(), /AVITY_PORT/); } finally { if (before === undefined) delete process.env.AVITY_PORT; else process.env.AVITY_PORT = before; }
+  const engineHome = mkdtempSync(join(tmpdir(), 'avity-engine-'));
+  // An address the machine does not own: listening succeeds only if the override wins.
+  const cfg = { ...JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')), token: 'moteur', host: '203.0.113.7', port: 7, projectsDir: join(engineHome, 'projects') };
+  writeFileSync(join(engineHome, 'config.json'), JSON.stringify(cfg));
+  const port = await new Promise<number>((resolve) => { const s = createNetServer().listen(0, '127.0.0.1', () => { const free = (s.address() as AddressInfo).port; s.close(() => resolve(free)); }); });
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.ts', import.meta.url))], { env: { ...process.env, AVITY_HOME: engineHome, AVITY_HOST: '127.0.0.1', AVITY_PORT: String(port), AVITY_EMBEDDED: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+  try {
+    const line = await new Promise<string>((resolve, reject) => {
+      createInterface({ input: child.stdout! }).on('line', (l) => { if (l.startsWith('AvityOne sur')) resolve(l); });
+      exited.then((code) => reject(new Error(`moteur arrêté (${code})`)));
+    });
+    assert.match(line, new RegExp(`^AvityOne sur http://127\\.0\\.0\\.1:${port} `));
+    const r = await fetch(`http://127.0.0.1:${port}/api/config`, { method: 'PATCH', headers: { authorization: 'Bearer moteur', 'content-type': 'application/json' }, body: JSON.stringify({ summarizeEvery: 5 }) });
+    assert.equal(r.status, 200);
+    const stored = JSON.parse(readFileSync(join(engineHome, 'config.json'), 'utf8'));
+    assert.deepEqual([stored.summarizeEvery, stored.host, stored.port], [5, '203.0.113.7', 7]);
+    child.stdin!.end();
+    assert.equal(await exited, 0);
+  } finally { child.kill('SIGKILL'); }
+});
+
+test('mcp: the memory server gets AVITY_HOME and never creates ~/.avityone when an agent filters the environment', async () => {
+  const { mcpServersFor } = await import('../src/context.ts');
+  const server = mcpServersFor(42)[0], userHome = mkdtempSync(join(tmpdir(), 'avity-user-'));
+  const mcp = spawn(server.command, server.args, { env: { PATH: process.env.PATH, HOME: userHome, ...Object.fromEntries(server.env.map((e) => [e.name, e.value])) } });
+  const lines = createInterface({ input: mcp.stdout })[Symbol.asyncIterator]();
+  mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }) + '\n');
+  assert.equal(JSON.parse(String((await lines.next()).value)).result.serverInfo.name, 'avity');
+  mcp.kill();
+  assert.equal(existsSync(join(userHome, '.avityone')), false);
+});
+
 test('terminal: interactive stdin, output and workspace isolation', async () => {
   const { openTerminal, readTerminal, writeTerminal, closeTerminal } = await import('../src/workspace.ts');
   const root = gitRepo(), { id } = openTerminal(root);
@@ -1087,6 +1162,21 @@ test('agents: readiness, commandes ACP et authentification inconnue ou requise',
     assert.equal((await probeAgent('adminfake')).authentication, 'required');
     await assert.rejects(agentOperation('shell injection', 'install'), /catalogue/);
   } finally { delete config.agents.adminfake; }
+});
+
+test('agents: the catalogue tells the adapter from the login CLI and gives the command to run in a terminal', async () => {
+  const { agentCatalog } = await import('../src/agents.ts');
+  const bin = mkdtempSync(join(tmpdir(), 'avity-cli-')), saved = process.env.PATH;
+  writeFileSync(join(bin, 'codex-acp'), '#!/bin/sh\n', { mode: 0o755 });
+  config.agents.codex = { name: 'Codex', cmd: 'codex-acp', args: [], strengths: 'tests' };
+  try {
+    process.env.PATH = bin;
+    const entry = () => agentCatalog().find((a) => a.id === 'codex')!;
+    assert.deepEqual([entry().installed, entry().catalog?.commandInstalled], [true, false], 'the adapter alone cannot log in');
+    assert.deepEqual(entry().catalog?.loginCommand, ['codex', 'login', '--device-auth']);
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 });
+    assert.equal(entry().catalog?.commandInstalled, true);
+  } finally { process.env.PATH = saved; delete config.agents.codex; }
 });
 
 test('quotas: migration additive conserve les anciennes mesures après deux démarrages', async () => {

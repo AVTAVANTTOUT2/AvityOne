@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { all, one, run, searchMemory, searchKb, addMemory, DB_PATH, type Row } from './store.ts';
-import { config } from './config.ts';
+import { config, HOME } from './config.ts';
 import { oneShot, type McpServer } from './acp.ts';
 import { consolidateKnowledge, getContextSelection, indexKnowledge, readSource } from './knowledge.ts';
 import { projectPath } from './projects.ts';
@@ -50,7 +50,8 @@ export function mcpServersFor(projectId: number): McpServer[] {
     name: 'avity',
     command: process.execPath,
     args: [fileURLToPath(new URL('./mcp.ts', import.meta.url)), String(projectId)],
-    env: [{ name: 'AVITY_DB', value: DB_PATH }, { name: 'NODE_NO_WARNINGS', value: '1' }],
+    // AVITY_HOME too: without it, an agent that filters the environment would make mcp.ts create ~/.avityone.
+    env: [{ name: 'AVITY_HOME', value: HOME }, { name: 'AVITY_DB', value: DB_PATH }, { name: 'NODE_NO_WARNINGS', value: '1' }],
   }];
 }
 

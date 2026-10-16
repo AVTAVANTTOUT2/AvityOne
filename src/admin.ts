@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, readdirSync, chmodSync, rmSync,
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { config, HOME, which, maskArgs } from './config.ts';
+import { config, HOME, which, maskArgs, listenAddress } from './config.ts';
 import { db, all, one, run } from './store.ts';
 
 const exec = promisify(execFile);
@@ -223,14 +223,14 @@ export async function networkStatus() {
     const status = JSON.parse(stdout);
     const { stdout: served } = await exec('tailscale', ['serve', 'status', '--json'], { timeout: 10_000, maxBuffer: 1024 * 1024 });
     const settings = JSON.parse(served);
-    return { installed: true, state: status.BackendState, hostname: status.Self?.DNSName, https: settings.TCP?.['443']?.HTTPS === true, port: config.port };
+    return { installed: true, state: status.BackendState, hostname: status.Self?.DNSName, https: settings.TCP?.['443']?.HTTPS === true, port: listenAddress().port };
   } catch (e: any) { return { installed: true, state: 'error', error: redact(e.message).slice(0, 500) }; }
 }
 
 export async function configureNetwork(input: { enabled: boolean }) {
   if (typeof input?.enabled !== 'boolean') throw problem('enabled doit être un booléen');
   if (!which('tailscale')) throw problem('Tailscale doit être installé et connecté sur le serveur', 409);
-  const args = ['serve', '--bg', '--https=443', `http://127.0.0.1:${config.port}`, ...(!input.enabled ? ['off'] : [])];
+  const args = ['serve', '--bg', '--https=443', `http://127.0.0.1:${listenAddress().port}`, ...(!input.enabled ? ['off'] : [])];
   try { await exec('tailscale', args, { timeout: 20_000, maxBuffer: 256 * 1024 }); }
   catch (e: any) { throw problem(`configuration Tailscale échouée : ${redact(e.stderr || e.message).slice(0, 500)}`, 409); }
   return networkStatus();
