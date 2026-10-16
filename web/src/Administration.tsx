@@ -1,25 +1,45 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { guard, toast } from './ui';
 import { ToolDialog } from './Workbench';
+import { AgentCard, type ProbeState } from './AgentCard';
+import { createAgentProbeRequests } from './agentProbes';
+
+const probeRequests = createAgentProbeRequests(id => api(`/agents/${id}/probe`, {}));
 
 export function Administration({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState('agents'), [settings, setSettings] = useState<any>(null), [status, setStatus] = useState<any>(null), [agents, setAgents] = useState<any[]>([]), [error, setError] = useState('');
+  const mounted = useRef(true), [probes, setProbes] = useState<Record<string, ProbeState>>(() => Object.fromEntries(probeRequests.entries().map(([id]) => [id, { busy: true }])));
   const load = async () => { const [c, s, a] = await Promise.all([api('/config'), api('/administration'), api('/agents')]); setSettings(c); setStatus(s); setAgents(a); };
-  useEffect(() => { load().catch(e => setError(e.message)); }, []);
+  const observeProbe = async (id: string, request: Promise<any>) => {
+    setProbes(current => ({ ...current, [id]: { busy: true } }));
+    try {
+      const health = await request;
+      if (!mounted.current) return;
+      setAgents(current => current.map(agent => agent.id === id ? { ...agent, health, installed: health.status !== 'missing' } : agent));
+      setProbes(current => ({ ...current, [id]: { busy: false } }));
+    } catch (e) { if (mounted.current) setProbes(current => ({ ...current, [id]: { busy: false, error: e instanceof Error ? e.message : 'erreur réseau' } })); }
+  };
+  const probe = (id: string) => observeProbe(id, probeRequests.run(id));
+  useEffect(() => {
+    mounted.current = true;
+    void probeRequests.resume(load, async (id, request) => { if (mounted.current) await observeProbe(id, request); }).catch(e => { if (mounted.current) setError(e.message); });
+    return () => { mounted.current = false; };
+  }, []);
   return <ToolDialog title="Administration" onClose={onClose}><nav className="tool-tabs" aria-label="Administration">{[['agents', 'Agents'], ['routing', 'Routage'], ['mcp', 'Serveurs MCP'], ['config', 'Configuration'], ['operations', 'Exploitation']].map(([id, label]) => <button key={id} className={`chip ${tab === id ? 'on' : ''}`} onClick={() => setTab(id)}>{label}</button>)}</nav>
-    {error && <p role="alert">{error}</p>}{!settings ? <p>Chargement…</p> : tab === 'agents' ? <Agents agents={agents} reload={load} /> : tab === 'routing' ? <Routing settings={settings} agents={agents} save={async patch => { setSettings(await api('/config', patch, 'PATCH')); toast('Règles enregistrées.'); }} />
+    {error && <p role="alert">{error}</p>}{!settings ? <p>Chargement…</p> : tab === 'agents' ? <Agents agents={agents} probes={probes} probe={probe} reload={load} /> : tab === 'routing' ? <Routing settings={settings} agents={agents} save={async patch => { setSettings(await api('/config', patch, 'PATCH')); toast('Règles enregistrées.'); }} />
       : tab === 'mcp' ? <Mcp settings={settings} save={async patch => { setSettings(await api('/config', patch, 'PATCH')); toast('Serveurs enregistrés ; utilisés à la prochaine connexion d’agent.'); }} />
         : tab === 'config' ? <Configuration settings={settings} reload={load} /> : <Operations status={status} reload={load} />}
   </ToolDialog>;
 }
 
-function Agents({ agents, reload }: { agents: any[]; reload: () => Promise<void> }) {
+function Agents({ agents, probes, probe, reload }: { agents: any[]; probes: Record<string, ProbeState>; probe: (id: string) => Promise<void>; reload: () => Promise<void> }) {
   const [operation, setOperation] = useState<any>(null), [input, setInput] = useState(''), [result, setResult] = useState<any>(null);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => { if (!operation || operation.state !== 'running') return; const timer = setInterval(() => api(`/agent-operations/${operation.id}`).then(setOperation, e => toast(e.message, true)), 1500); return () => clearInterval(timer); }, [operation?.id, operation?.state]);
-  return <div className="tool-stack">{agents.map(a => <article className="card tool-stack" key={a.id}><div className="row"><b className="grow">{a.name}</b><span>{a.installed ? 'Installé' : 'Non installé'}</span></div><div className="row wrap"><button className="chip" onClick={guard(async () => { await api(`/agents/${a.id}/probe`, {}); await reload(); })}>Vérifier connexion et disponibilité</button>
-    <button className="chip" disabled={!a.catalog || operation?.state === 'running'} onClick={guard(async () => { setOperation(await api(`/agents/${a.id}/install`, {})); await reload(); })}>Installer</button><button className="chip" disabled={!a.catalog || !a.installed || operation?.state === 'running'} onClick={guard(async () => setOperation(await api(`/agents/${a.id}/connect`, {})))}>Connecter</button></div>
-    <p>{a.strengths}</p>{a.health && <pre className="ctx">{JSON.stringify(a.health, null, 2)}</pre>}</article>)}
+  return <div className="tool-stack">{agents.map(a => <AgentCard key={a.id} agent={a} probe={probes[a.id]} now={now} operationBusy={operation?.state === 'running'} onProbe={() => { void probe(a.id); }}
+    onInstall={guard(async () => { setOperation(await api(`/agents/${a.id}/install`, {})); await reload(); })} onConnect={guard(async () => setOperation(await api(`/agents/${a.id}/connect`, {})))} />)}
     <p className="muted">Les quotas non fournis par l’agent restent inconnus. Installer télécharge le CLI du catalogue ; connecter lance son parcours d’authentification.</p>
     {operation && <section className="tool-stack"><b>{operation.action} · {operation.state}</b><pre className="terminal-output">{operation.output}</pre>{operation.state === 'running' && operation.action === 'connect' && <form className="row" onSubmit={guard(async e => { e.preventDefault(); await api(`/agent-operations/${operation.id}/input`, { input: input + '\n' }); setInput(''); })}><input className="input grow" type="password" autoComplete="off" aria-label="Réponse à la connexion de l’agent" value={input} onChange={e => setInput(e.target.value)} /><button className="btn">Transmettre au CLI</button></form>}<button className="chip" onClick={guard(reload)}>Actualiser les agents</button></section>}
     <details><summary>Évaluation comparative</summary><form className="tool-stack" onSubmit={guard(async e => { e.preventDefault(); const data = new FormData(e.currentTarget); setResult(await api('/benchmarks', { agents: data.getAll('agents'), prompt: data.get('prompt'), expected: data.get('expected') })); })}>

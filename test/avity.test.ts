@@ -6,11 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizeCursorQuota, readCursorQuota, type CursorReadings } from '../src/cursor-quota.ts';
 import { cursorMonthly, cursorWeekly } from './cursor-quota-fixtures.ts';
 import { sessionDirection } from '../web/src/shortcuts.ts';
 import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
+import { createRequire } from 'node:module';
+import { createAgentProbeRequests } from '../web/src/agentProbes.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
 
@@ -1780,4 +1782,82 @@ test('source OpenCode: configurations ambiguës et connexions ne deviennent jama
   unlinkSync(join(dataDir, 'opencode.db'));
   writeFileSync(join(configDir, 'package.json'), JSON.stringify({ scripts: { postinstall: 'never-execute' }, dependencies: { '@opencode-ai/plugin': '1.19.0' } }));
   assert.match((await readOpenCodeQuota(options)).reason, /Extensions OpenCode personnalisées/);
+});
+
+test('administration: cartes de quotas lisibles, périmées et inconnues sans faux solde actuel', async () => {
+  const require = createRequire(import.meta.url), { transformWithOxc } = await import('vite');
+  const { createElement } = require('react'), { renderToStaticMarkup } = require('react-dom/server');
+  const compiled = await transformWithOxc(readFileSync(new URL('../web/src/AgentCard.tsx', import.meta.url), 'utf8'), 'AgentCard.tsx', { jsx: { runtime: 'classic' } });
+  const components = await import('data:text/javascript;base64,' + Buffer.from(`import * as React from ${JSON.stringify(pathToFileURL(require.resolve('react')).href)};\n${compiled.code}`).toString('base64'));
+  const now = Date.now(), checkedAt = new Date(now - 1000).toISOString();
+  const agent = { id: 'synthetic', name: 'Agent de test', strengths: 'Code', installed: true, catalog: {}, health: {
+    status: 'ready', checkedAt, quotaSnapshot: { status: 'available', remaining: 44.704684, limit: 100, unit: 'pourcentage restant (total natif)',
+      checkedAt, resetAt: new Date(now + 600000).toISOString(), error: null, details: 'Pool Cursor : 45,8 % restants. Autres modèles : 0 %. Crédits : 0 centimes USD.' },
+  } };
+  const original = JSON.stringify(agent), noop = () => {};
+  const render = (value = agent, extra: any = {}) => renderToStaticMarkup(createElement(components.AgentCard, {
+    agent: value, now, operationBusy: false, onProbe: noop, onInstall: noop, onConnect: noop, ...extra,
+  }));
+  const available = render();
+  assert.match(available, /Connexion vérifiée/); assert.match(available, /44,7 % restants/);
+  assert.match(available, /Autres modèles : 0 %/); assert.match(available, /Remise à zéro annoncée/);
+  assert.match(available, /<details><summary>Détails techniques/); assert.doesNotMatch(available, /<details open/);
+  const exhausted = structuredClone(agent); exhausted.health.quotaSnapshot.status = 'exhausted'; exhausted.health.quotaSnapshot.remaining = 0;
+  assert.match(render(exhausted), /Quota épuisé/); assert.match(render(exhausted), /0 % restants/);
+  const expired = render(agent, { now: now + 299000 });
+  assert.match(expired, /Quota expiré/); assert.match(expired, /Relance la vérification/);
+  assert.doesNotMatch(expired.split('<details>')[0], /44,7 %|45,8 %|Quota disponible/);
+  assert.equal(components.quotaState(agent.health.quotaSnapshot, now + 298999), 'available');
+  const reset = structuredClone(agent); reset.health.quotaSnapshot.resetAt = new Date(now).toISOString();
+  assert.match(render(reset), /Quota expiré/);
+  const unknown = structuredClone(agent); unknown.health.quotaSnapshot.status = 'unknown';
+  unknown.health.quotaSnapshot.error = 'Le fournisseur ne publie pas de solde global' as any;
+  const uncertain = render(unknown).split('<details>')[0];
+  assert.match(uncertain, /Quota inconnu/); assert.match(uncertain, /ne publie pas de solde global/);
+  assert.match(uncertain, /Crédits : 0 centimes USD/); assert.doesNotMatch(uncertain, /44,7 % restants/);
+  const small = structuredClone(agent); small.health.quotaSnapshot.remaining = 0.0001;
+  assert.match(render(small), /&lt; 0,1 % restants/);
+  const busy = render(agent, { probe: { busy: true } });
+  assert.match(busy, /aria-busy="true"/); assert.match(busy, /disabled="">Vérification en cours/);
+  assert.match(busy, /role="status"/); assert.equal((busy.match(/disabled=""/g) ?? []).length, 3);
+  const failed = render(agent, { probe: { busy: false, error: 'Réseau indisponible' } });
+  assert.match(failed, /role="alert"/); assert.match(failed, /Réseau indisponible/); assert.match(failed, /Tu peux réessayer/);
+  assert.doesNotMatch(failed, /disabled=""/);
+  assert.equal(JSON.stringify(agent), original, 'le rendu ne modifie ni la mesure ni la définition de l’agent');
+});
+
+test('administration: une sonde en vol survit à la réouverture sans doublon et permet le réessai après erreur', async () => {
+  const calls: string[] = [], waiting = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  const requests = createAgentProbeRequests(id => {
+    calls.push(id);
+    return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+  });
+  const first = requests.run('fake');
+  await Promise.resolve();
+  assert.equal(requests.entries()[0][0], 'fake');
+  const reopened = requests.entries()[0][1];
+  assert.equal(reopened, first, 'la modale remontée observe la requête existante');
+  assert.equal(requests.run('fake'), first, 'un second clic ne lance pas un autre appel');
+  assert.deepEqual(calls, ['fake']);
+  const health = { status: 'ready', quota: 'available' };
+  waiting.get('fake')!.resolve(health);
+  assert.deepEqual(await reopened, health); assert.equal(requests.entries().length, 0);
+  const failed = requests.run('fake');
+  await Promise.resolve(); waiting.get('fake')!.reject(new Error('Réseau indisponible'));
+  await assert.rejects(failed, /Réseau indisponible/); assert.equal(requests.entries().length, 0);
+  const retry = requests.run('fake');
+  await Promise.resolve(); waiting.get('fake')!.resolve(health);
+  assert.deepEqual(await retry, health); assert.deepEqual(calls, ['fake', 'fake', 'fake']);
+  const pending = requests.run('fake');
+  let finishLoad!: () => void;
+  let displayed = { status: 'old' };
+  const resumed = requests.resume(async () => {
+    const staleCatalog = { status: 'old' };
+    await new Promise<void>(resolve => { finishLoad = resolve; });
+    displayed = staleCatalog;
+  }, async (_id, result) => { displayed = await result as typeof displayed; });
+  await Promise.resolve(); waiting.get('fake')!.resolve(health);
+  await pending;
+  finishLoad(); await resumed;
+  assert.deepEqual(displayed, health, 'une sonde terminée pendant le chargement remplace le catalogue ancien');
 });
