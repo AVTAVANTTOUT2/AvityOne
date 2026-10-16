@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, readdirSync, chmodSync, rmSync,
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { config, HOME, which } from './config.ts';
+import { config, HOME, which, maskArgs } from './config.ts';
 import { db, all, one, run } from './store.ts';
 
 const exec = promisify(execFile);
@@ -24,13 +24,19 @@ CREATE TABLE IF NOT EXISTS agent_evaluations (
   expected TEXT NOT NULL, answer TEXT NOT NULL, passed INTEGER NOT NULL, duration_ms REAL NOT NULL,
   error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 `);
+if (!all('PRAGMA table_info(agent_quotas)').some(column => column.name === 'details')) db.exec('ALTER TABLE agent_quotas ADD COLUMN details TEXT');
 
 const validNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 const integer = (v: unknown) => validNumber(v) && Number.isSafeInteger(v) ? v : null;
 const problem = (message: string, status = 400) => Object.assign(new Error(message), { status });
 export function redact(value: string) {
   let s = value.replace(/(?:sk-(?:proj-)?[\w-]{10,}|Bearer\s+[\w.\-]{10,}|(?:token|api[_-]?key|password)\s*[=:]\s*[^\s,;]+)/gi, '[secret masqué]');
-  const secrets = [config.token, ...Object.values(config.agents).flatMap((a) => [...Object.values(a.env ?? {}), ...Object.values(a.quota?.env ?? {})]), ...config.mcpServers.flatMap((s) => Object.values(s.env))];
+  const argumentGroups = [...Object.values(config.agents).flatMap(a => [a.args, a.quota?.args ?? []]), ...config.mcpServers.map(s => s.args)];
+  const hiddenArguments = argumentGroups.flatMap(args => {
+    const masked = maskArgs(args);
+    return args.flatMap((arg, index) => masked[index] === arg ? [] : [arg, arg.replace(/^[^:=]*[:=]\s*/, '').replace(/^Bearer\s+/i, '')]);
+  });
+  const secrets = [config.token, ...hiddenArguments, ...Object.values(config.agents).flatMap((a) => [...Object.values(a.env ?? {}), ...Object.values(a.quota?.env ?? {})]), ...config.mcpServers.flatMap((s) => Object.values(s.env))];
   for (const secret of secrets) if (secret.length >= 4) s = s.split(secret).join('[secret masqué]');
   return s;
 }
@@ -52,13 +58,13 @@ export function recordExecution(e: { sessionId: string; agent: string; status: '
     e.sessionId, e.agent, e.status, Math.max(0, e.durationMs), integer(e.inputTokens), integer(e.outputTokens), validNumber(e.costUsd) ? e.costUsd : null, e.error ? redact(e.error).slice(0, 1000) : null);
 }
 
-export type QuotaSnapshot = { agent: string; status: 'available' | 'exhausted' | 'unknown'; remaining: number | null; limit: number | null; unit: string | null; resetAt: string | null; checkedAt: string | null; error: string | null };
+export type QuotaSnapshot = { agent: string; status: 'available' | 'exhausted' | 'unknown'; remaining: number | null; limit: number | null; unit: string | null; resetAt: string | null; checkedAt: string | null; error: string | null; details?: string | null };
 const quotaSource = (agent: string) => createHash('sha256').update(JSON.stringify(config.agents[agent]?.quota ?? null)).digest('hex');
 export function recordQuota(snapshot: QuotaSnapshot) {
-  run(`INSERT INTO agent_quotas(agent,source_hash,status,remaining,quota_limit,unit,reset_at,checked_at,error) VALUES(?,?,?,?,?,?,?,?,?)
+  run(`INSERT INTO agent_quotas(agent,source_hash,status,remaining,quota_limit,unit,reset_at,checked_at,error,details) VALUES(?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(agent) DO UPDATE SET source_hash=excluded.source_hash,status=excluded.status,remaining=excluded.remaining,
-      quota_limit=excluded.quota_limit,unit=excluded.unit,reset_at=excluded.reset_at,checked_at=excluded.checked_at,error=excluded.error`,
-  snapshot.agent, quotaSource(snapshot.agent), snapshot.status, snapshot.remaining, snapshot.limit, snapshot.unit, snapshot.resetAt, snapshot.checkedAt ?? new Date().toISOString(), snapshot.error);
+      quota_limit=excluded.quota_limit,unit=excluded.unit,reset_at=excluded.reset_at,checked_at=excluded.checked_at,error=excluded.error,details=excluded.details`,
+  snapshot.agent, quotaSource(snapshot.agent), snapshot.status, snapshot.remaining, snapshot.limit, snapshot.unit, snapshot.resetAt, snapshot.checkedAt ?? new Date().toISOString(), snapshot.error, snapshot.details ?? null);
   return agentQuota(snapshot.agent);
 }
 
@@ -67,7 +73,7 @@ export function agentQuota(agent: string): QuotaSnapshot {
   if (!config.agents[agent]?.quota?.cmd) return unknown;
   const r = one('SELECT * FROM agent_quotas WHERE agent = ?', agent);
   if (!r || r.source_hash !== quotaSource(agent)) return { ...unknown, error: 'source de quota non vérifiée' };
-  const result: QuotaSnapshot = { agent, status: r.status, remaining: r.remaining, limit: r.quota_limit, unit: r.unit, resetAt: r.reset_at, checkedAt: r.checked_at, error: r.error };
+  const result: QuotaSnapshot = { agent, status: r.status, remaining: r.remaining, limit: r.quota_limit, unit: r.unit, resetAt: r.reset_at, checkedAt: r.checked_at, error: r.error, details: r.details };
   const checked = Date.parse(r.checked_at), now = Date.now();
   if (!Number.isFinite(checked) || checked > now || now - checked >= 300_000 || (r.reset_at && Date.parse(r.reset_at) <= now)) return { ...result, status: 'unknown', error: 'mesure de quota expirée : relance la vérification' };
   return result;

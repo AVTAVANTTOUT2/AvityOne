@@ -205,7 +205,7 @@ validées ; les valeurs sensibles sont masquées. Un changement d'adresse ou de 
 | `host`, `port` | `0.0.0.0`, `7710` : écoute HTTP. |
 | `projectsDir` | `~/projects` : dossiers créés et point de départ du sélecteur. |
 | `agents` | Catalogue Claude, Codex, Cursor, OpenCode : `name`, `cmd`, `args`, `strengths`, avec `env`, `authMethod` et `quota` facultatifs. |
-| `agents.<id>.quota` | Absent par défaut. `{ "cmd": "/chemin/vers/lecteur-quota", "args": [], "env": {} }` : commande locale donnant le quota réel du fournisseur, exécutée sans shell depuis `AVITY_HOME`. |
+| `agents.<id>.quota` | Absent par défaut. `{ "cmd": "/chemin/vers/lecteur-quota", "args": [], "env": {} }` : commande locale donnant le quota réel du fournisseur, exécutée sans shell depuis `AVITY_HOME`. `timeoutMs` facultatif : 5 000 ms par défaut, de 1 000 à 30 000 ms. |
 | `defaultAgent`, `routes` | `claude` ; règles regex ordonnées définies dans le fichier source. |
 | `routing` | `{ "strategy": "rules", "agent": "", "model": "", "fallback": true }`. Stratégies `rules`, `performance`, `llm` ; classifieur par défaut = agent du résumeur. |
 | `reviewer` | Claude → Codex, Codex → Claude, Cursor → Codex, OpenCode → Claude. Le relecteur doit différer de l'auteur. |
@@ -229,11 +229,13 @@ exige. Les autres piles nécessitent des commandes de préparation et de validat
 La vérification d'un agent lance aussi sa commande de quota, si elle est configurée. Elle doit écrire sur stdout un
 objet JSON `{ "remaining": 100, "limit": 200, "unit": "requêtes", "resetAt": "2026-11-01T00:00:00Z" }` ;
 `resetAt` est facultatif, les nombres doivent être finis et positifs ou nuls, et `limit` doit être supérieur ou égal
-à `remaining`. La commande est limitée à 5 secondes et 64 Kio de sortie. La mesure expire après 5 minutes, à la date
+à `remaining`. La commande est limitée à 5 secondes par défaut (`timeoutMs` configurable) et 64 Kio de sortie. La mesure expire après 5 minutes, à la date
 de remise à zéro ou après modification de la source. Un quota frais épuisé bloque les nouveaux prompts ; absence de
 source, erreur ou mesure expirée donnent **inconnu**. Le raccordement et l'exactitude de cette commande dépendent du
 fournisseur : AvityOne ne déduit pas son quota des tokens facturés. Les [sources fournies](docs/quotas.md) raccordent
-Codex et Claude à leurs mesures de compte ; Cursor et OpenCode restent inconnus sans source fournisseur fiable.
+Codex, Claude et Cursor à leurs mesures de compte. Cursor détaille ses différentes réserves. Pour OpenCode,
+la source vérifie le modèle global et explique l'absence de plafond publié lorsque l'accès est anonyme gratuit.
+Les réponses peuvent fournir `details`, ou `status: "unknown"` avec `remaining` et `limit` nuls et une `reason` explicite.
 
 ## Développement
 

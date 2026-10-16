@@ -7,6 +7,9 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Ajouté
 
+- Quotas Cursor issus des compteurs natifs, avec réserves distinctes et prise en compte des crédits et restrictions.
+- Vérification du contexte anonyme OpenCode : modèle global et tarif catalogue nul vérifiés, plafond non publié signalé explicitement.
+- Détails fournisseur persistés et délai configurable par source de quota, de 1 à 30 secondes.
 - Sources de quotas réels pour Codex et Claude, sans convertir les statistiques locales en solde fournisseur.
 - Installation isolée d'une dictée CPU avec faster-whisper et modèle multilingue, sans dépendance runtime Node.
 - **Administration des agents** : installation et connexion de Claude Code, Codex, Cursor et OpenCode depuis le
@@ -112,6 +115,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- L'actualisation des agents remplace le résultat affiché au lieu de conserver un ancien quota en cache local.
+- Les explications de quota masquent également les secrets placés dans les arguments de commande.
 - L'attente d'une autorisation humaine suspend les délais d'inactivité ACP ; la reprise repart avec un délai complet.
 - Un agent arrêté après expiration peut être reconnecté au tour suivant au lieu de conserver une connexion morte.
 - Une fusion échouée ne laisse plus une sélection de branches partiellement intégrée : le résultat est préparé

@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { normalizeCursorQuota, readCursorQuota, type CursorReadings } from '../src/cursor-quota.ts';
+import { cursorMonthly, cursorWeekly } from './cursor-quota-fixtures.ts';
 import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
@@ -1035,6 +1037,95 @@ test('agents: readiness, commandes ACP et authentification inconnue ou requise',
   } finally { delete config.agents.adminfake; }
 });
 
+test('quotas: migration additive conserve les anciennes mesures après deux démarrages', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const legacyHome = mkdtempSync(join(home, 'legacy-quota-'));
+  const legacy = new DatabaseSync(join(legacyHome, 'avity.db'));
+  legacy.exec(`CREATE TABLE agent_quotas (agent TEXT PRIMARY KEY, source_hash TEXT NOT NULL, status TEXT NOT NULL,
+    remaining REAL, quota_limit REAL, unit TEXT, reset_at TEXT, checked_at TEXT NOT NULL, error TEXT);
+    INSERT INTO agent_quotas VALUES('saved','source','available',12,100,'requests',NULL,'2026-01-01',NULL)`);
+  legacy.close();
+  const script = `await import(${JSON.stringify(new URL('../src/admin.ts', import.meta.url).href)});
+    const { db } = await import(${JSON.stringify(new URL('../src/store.ts', import.meta.url).href)});
+    console.log(JSON.stringify(db.prepare("SELECT remaining, details FROM agent_quotas WHERE agent = 'saved'").get()));`;
+  for (let i = 0; i < 2; i++) {
+    const result = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, AVITY_HOME: legacyHome }, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(result), { remaining: 12, details: null });
+  }
+});
+
+test('quotas: le délai propre à une source est borné et conservé par la configuration', async () => {
+  const { probeQuota } = await import('../src/agents.ts');
+  const { publicConfig, updateConfig } = await import('../src/config.ts');
+  const saved = structuredClone(config);
+  try {
+    const agents = publicConfig().agents;
+    agents.fake.quota = { cmd: process.execPath, args: [fileURLToPath(new URL('./quota-source.mjs', import.meta.url))], env: { QUOTA_MODE: 'timeout' }, timeoutMs: 1000 };
+    updateConfig({ agents });
+    assert.equal(publicConfig().agents.fake.quota.timeoutMs, 1000);
+    assert.match((await probeQuota('fake')).error!, /expirée après 1 s/);
+    config.agents.fake.quota = { cmd: process.execPath, args: ['-e', 'console.log(JSON.stringify({ remaining: Number(process.env.AVITY_QUOTA_TIMEOUT_MS), limit: 30000, unit: "ms" }))'], env: { AVITY_QUOTA_TIMEOUT_MS: '30000' }, timeoutMs: 1000 };
+    assert.equal((await probeQuota('fake')).remaining, 1000);
+    for (const timeoutMs of [0, 999, 30001, 1500.5]) {
+      assert.throws(() => updateConfig({ agents: { ...publicConfig().agents, fake: { ...config.agents.fake, quota: { ...config.agents.fake.quota, timeoutMs } } } }), /quota/);
+    }
+  } finally { Object.assign(config, saved); }
+});
+
+test('quotas: le runner accepte les mesures Cursor et ses réserves non bloquantes', async () => {
+  const { normalizeCursorQuota } = await import('../src/cursor-quota.ts');
+  const { cursorMonthly } = await import('./cursor-quota-fixtures.ts');
+  const { probeQuota } = await import('../src/agents.ts');
+  const { assertBudget } = await import('../src/admin.ts');
+  const paid = cursorMonthly();
+  (paid.usage as any).planUsage = { autoPercentUsed: 100, apiPercentUsed: 100, totalPercentUsed: 100 };
+  paid.onDemand = { usageBasedPremiumRequests: true };
+  const source = { cmd: process.execPath, args: [fileURLToPath(new URL('./quota-source.mjs', import.meta.url))], env: { QUOTA_JSON: '' } };
+  config.agents.cursorFixture = { ...config.agents.fake, quota: source };
+  try {
+    for (const expected of [normalizeCursorQuota(cursorMonthly()), normalizeCursorQuota(paid), normalizeCursorQuota({})]) {
+      source.env.QUOTA_JSON = JSON.stringify(expected);
+      const actual = await probeQuota('cursorFixture');
+      assert.equal(actual.status, expected.status);
+      assert.equal(actual.details, expected.details ?? null);
+      assert.equal(actual.error, expected.reason ?? null);
+      assert.doesNotThrow(() => assertBudget('cursorFixture'));
+    }
+  } finally { delete config.agents.cursorFixture; }
+});
+
+test('quotas: une source sans plafond publié conserve sa preuve sans inventer de solde', async () => {
+  const { probeQuota } = await import('../src/agents.ts');
+  const { agentQuota, assertBudget } = await import('../src/admin.ts');
+  const source = { cmd: process.execPath, args: [fileURLToPath(new URL('./quota-source.mjs', import.meta.url))], env: { QUOTA_JSON: '' } };
+  config.agents.unpublished = { ...config.agents.fake, quota: source };
+  const evidence = { status: 'unknown', remaining: null, limit: null, reason: 'Plafond non publié par le fournisseur.', details: 'Modèle gratuit temporairement ; aucune promesse de capacité illimitée.' };
+  try {
+    source.env.QUOTA_JSON = JSON.stringify(evidence);
+    const result = await probeQuota('unpublished');
+    assert.equal(result.error, evidence.reason);
+    assert.equal(result.details, evidence.details);
+    assert.equal(result.remaining, null);
+    assert.equal(result.limit, null);
+    assert.equal(agentQuota('unpublished').details, evidence.details);
+    assert.doesNotThrow(() => assertBudget('unpublished'));
+    source.env.QUOTA_JSON = JSON.stringify({ remaining: 0.001, limit: 1, unit: 'USD', details: 'Un crédit mesuré positif reste utilisable.' });
+    assert.equal((await probeQuota('unpublished')).status, 'available');
+    assert.doesNotThrow(() => assertBudget('unpublished'));
+    run("UPDATE agent_quotas SET checked_at = ? WHERE agent = 'unpublished'", new Date(Date.now() - 300_001).toISOString());
+    assert.equal(agentQuota('unpublished').status, 'unknown');
+    for (const invalid of [{ ...evidence, remaining: 0 }, { ...evidence, reason: '' }, { ...evidence, details: 'x'.repeat(1001) }, { ...evidence, details: 'ligne\ninterdite' }]) {
+      source.env.QUOTA_JSON = JSON.stringify(invalid);
+      assert.equal((await probeQuota('unpublished')).error, 'schéma de quota invalide');
+    }
+    const secrets = ['synthetic-private-provider-key', 'synthetic-inline-key', 'synthetic-auth-key'];
+    source.args.push('--token', secrets[0], `--api-key=${secrets[1]}`, `Authorization: Bearer ${secrets[2]}`);
+    source.env.QUOTA_JSON = JSON.stringify({ ...evidence, reason: secrets.join(' '), details: `Source : ${secrets.join(' ')}` });
+    const safe = await probeQuota('unpublished');
+    for (const secret of secrets) assert.ok(!JSON.stringify(safe).includes(secret), 'aucun secret des arguments dans la mesure publique');
+  } finally { delete config.agents.unpublished; }
+});
+
 test('quotas: source locale validée, secrets masqués et épuisement expirant', async () => {
   const { probeAgent, probeQuota } = await import('../src/agents.ts');
   const { usageReport, agentQuota, assertBudget } = await import('../src/admin.ts');
@@ -1090,7 +1181,7 @@ test('quotas: absence, erreur, JSON invalide, schéma invalide et délai restent
     source.env = { QUOTA_MODE: 'timeout' };
     const start = performance.now(), result = await probeQuota('quotaError');
     assert.equal(result.status, 'unknown');
-    assert.match(result.error!, /cinq secondes/);
+    assert.match(result.error!, /après 5 s$/);
     assert.ok(performance.now() - start < 6500, 'le délai de la source est borné');
   } finally { Object.assign(config, saved); writeFileSync(join(home, 'config.json'), JSON.stringify(saved)); }
 });
@@ -1433,9 +1524,9 @@ test('source Claude: identifiants locaux, endpoint fixe, lecture bornée et erre
   await assert.rejects(readClaudeQuota({ credentialsPath: join(home, 'missing-credentials'), fetcher }), /absente ou illisible/);
 });
 
-test('sources de quotas: Cursor et OpenCode restent explicitement inconnus', () => {
+test('sources de quotas: le répartiteur rejette les sources non prises en charge', () => {
   const script = fileURLToPath(new URL('../src/quota-source.ts', import.meta.url));
-  for (const provider of ['cursor', 'opencode']) {
+  for (const provider of ['non-configure', 'inconnu']) {
     try { execFileSync(process.execPath, [script, provider], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); assert.fail('source non disponible acceptée'); }
     catch (e: any) {
       assert.equal(e.status, 1);
@@ -1444,4 +1535,237 @@ test('sources de quotas: Cursor et OpenCode restent explicitement inconnus', () 
       assert.match(JSON.parse(e.stderr).error, /non prise en charge/);
     }
   }
+});
+
+test('Cursor quotas: total natif et deux pools sans déduire un plafond depuis le tarif', () => {
+  const now = Date.now(), readings = cursorMonthly(now), result = normalizeCursorQuota(readings, now);
+  assert.equal(result.status, 'available');
+  assert.equal(result.remaining, 40);
+  assert.equal(result.limit, 100);
+  assert.match(result.details ?? '', /modèles Cursor : 46,875 %/);
+  assert.match(result.details ?? '', /autres modèles : 0 %/);
+  assert.match(result.details ?? '', /demande : désactivé/);
+  assert.equal(result.resetAt, new Date(now + 86400000).toISOString());
+  assert.ok(result.details && result.details.length <= 1000);
+  const usage = readings.usage as any;
+  usage.planUsage.totalPercentUsed = 100;
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown', 'un pool disponible interdit un épuisement global');
+  for (const value of [undefined, null, '50', NaN, -1, 101]) {
+    usage.planUsage.totalPercentUsed = value;
+    assert.equal(normalizeCursorQuota(readings, now).status, 'unknown');
+  }
+  usage.planUsage.totalPercentUsed = 60;
+  delete usage.planUsage.apiPercentUsed;
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown', 'un pool manquant ne vaut pas zéro');
+  const expired = cursorMonthly(now); (expired.usage as any).billingCycleEnd = String(now - 1);
+  assert.equal(normalizeCursorQuota(expired, now).status, 'unknown');
+});
+
+test('Cursor quotas: aucun épuisement global avec crédit, paiement, autre modèle ou mode lent', () => {
+  const base = cursorMonthly();
+  (base.usage as any).planUsage = { autoPercentUsed: 100, apiPercentUsed: 100, totalPercentUsed: 100 };
+  base.policy = { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK' };
+  assert.equal(normalizeCursorQuota(base).status, 'exhausted');
+  const variants: Partial<CursorReadings>[] = [
+    { onDemand: { usageBasedPremiumRequests: true } }, { onDemand: undefined },
+    { credits: { hasCreditGrants: true, creditBalanceCents: '500' } }, { credits: undefined },
+    { policy: undefined }, { policy: {} }, { policy: { stage: 'LIMIT_HIT_STAGE_WEEKLY_LIMIT' } },
+    { policy: { stage: 'LIMIT_HIT_STAGE_AUTO_SWITCH' } }, { policy: { stage: 'LIMIT_HIT_STAGE_SLOW_POOL' } },
+    { policy: { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK', isInSlowPool: true } },
+    { policy: { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK', allowedModelIds: ['free-model'] } },
+  ];
+  for (const change of variants) {
+    const result = normalizeCursorQuota({ ...base, ...change });
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.remaining, null); assert.equal(result.limit, null); assert.equal(result.unit, null);
+    assert.equal(Object.hasOwn(result, 'resetAt'), false);
+    assert.ok(result.details && result.details.length <= 1000);
+  }
+  const paid = normalizeCursorQuota({ ...base, onDemand: { usageBasedPremiumRequests: true } });
+  assert.match(paid.details ?? '', /aucun accès illimité déduit/);
+  assert.equal(Object.hasOwn(paid, 'resetAt'), false, 'unknown ne porte pas de date de remise à zéro exploitable');
+  const limited = structuredClone(base);
+  limited.onDemand = { usageBasedPremiumRequests: true };
+  (limited.usage as any).spendLimitUsage = { overallLimit: 1234, overallRemaining: 19 };
+  assert.match(normalizeCursorQuota(limited).details ?? '', /1234 centimes USD ; reste 19 centimes USD/);
+});
+
+test('Cursor quotas: pool hebdomadaire et prépayé séparés, données masquées restent inconnues', () => {
+  const now = Date.now(), readings = cursorWeekly(now);
+  const result = normalizeCursorQuota(readings, now);
+  assert.equal(result.remaining, 75);
+  assert.equal(result.resetAt, new Date(now + 6 * 86400000).toISOString());
+  assert.match(result.details ?? '', /prépayé : 1234 centimes USD/);
+  const weekly = readings.weekly as any;
+  weekly.usagePercent = 100;
+  readings.policy = { stage: 'LIMIT_HIT_STAGE_HARD_BLOCK' };
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown');
+  weekly.prepaidBalanceCents = '0';
+  assert.equal(normalizeCursorQuota(readings, now).status, 'exhausted');
+  weekly.prepaidBalanceWithheld = true;
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown');
+  assert.match(normalizeCursorQuota(readings, now).details ?? '', /masqué/);
+  weekly.prepaidBalanceWithheld = false;
+  weekly.prepaidBalanceCents = '9007199254740993';
+  assert.equal(normalizeCursorQuota(readings, now).status, 'unknown', 'les int64 non représentables exactement sont rejetés');
+});
+
+test('Cursor quotas: lectures natives bornées, sans mutation, secret ni identité dans la sortie', async () => {
+  const credentialsPath = join(home, 'cursor-quota-auth.json'), fixture = cursorMonthly();
+  writeFileSync(credentialsPath, JSON.stringify({ accessToken: 'synthetic-cursor-token', refreshToken: 'synthetic-refresh' }), { mode: 0o600 });
+  const methods: Record<string, keyof CursorReadings> = { GetCurrentPeriodUsage: 'usage', GetPlanInfo: 'plan', GetCreditGrantsBalance: 'credits', GetUsageBasedPremiumRequests: 'onDemand', GetUsageLimitPolicyStatus: 'policy', GetXaiUserUsageSnapshot: 'weekly' };
+  const called: string[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    const endpoint = new URL(String(url)), method = endpoint.pathname.split('/').at(-1)!;
+    assert.equal(endpoint.origin, 'https://api2.cursor.sh');
+    assert.equal(endpoint.pathname, `/aiserver.v1.DashboardService/${method}`);
+    assert.ok(Object.hasOwn(methods, method));
+    assert.equal(init?.method, 'POST'); assert.equal(init?.body, '{}'); assert.equal(init?.redirect, 'error');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer synthetic-cursor-token');
+    assert.equal(new Headers(init?.headers).get('connect-protocol-version'), '1');
+    called.push(method);
+    return Response.json(fixture[methods[method]]);
+  };
+  assert.equal((await readCursorQuota({ credentialsPath, fetcher })).remaining, 40);
+  assert.equal(called.length, 5);
+  Object.assign(fixture, cursorWeekly()); called.length = 0;
+  assert.equal((await readCursorQuota({ credentialsPath, fetcher })).remaining, 75);
+  assert.ok(called.includes('GetXaiUserUsageSnapshot'));
+  for (const status of [401, 403, 429, 500]) {
+    const result = await readCursorQuota({ credentialsPath, fetcher: async () => new Response('synthetic-cursor-token private@example.invalid', { status }) });
+    assert.equal(result.status, 'unknown'); assert.doesNotMatch(JSON.stringify(result), /synthetic-cursor-token|private@/);
+    assert.equal(Object.hasOwn(result, 'resetAt'), false);
+    assert.equal(Object.hasOwn(result, 'details'), false);
+  }
+  for (const text of ['bad JSON synthetic-cursor-token', 'x'.repeat(70_000)]) {
+    const result = await readCursorQuota({ credentialsPath, fetcher: async () => new Response(text) });
+    assert.equal(result.status, 'unknown'); assert.doesNotMatch(JSON.stringify(result), /synthetic-cursor-token/);
+  }
+  const start = performance.now();
+  const result = await readCursorQuota({ credentialsPath, timeoutMs: 10, fetcher: async (_url, init) => new Promise((_resolve, reject) => {
+    if (init?.signal?.aborted) reject(new Error('synthetic-cursor-token'));
+    else init?.signal?.addEventListener('abort', () => reject(new Error('synthetic-cursor-token')), { once: true });
+    setTimeout(() => {}, 20);
+  }) });
+  assert.equal(result.status, 'unknown'); assert.ok(performance.now() - start < 1000);
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-cursor-token/);
+  const absent = await readCursorQuota({ credentialsPath: join(home, 'absent-cursor-auth'), fetcher });
+  assert.equal(absent.status, 'unknown');
+  assert.equal(Object.hasOwn(absent, 'resetAt'), false);
+  assert.equal(Object.hasOwn(absent, 'details'), false);
+});
+
+test('source OpenCode: sélection native isolée, catalogue courant et aucun quota inventé', async () => {
+  const { readOpenCodeQuota } = await import('../src/opencode-quota.ts');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = mkdtempSync(join(home, 'opencode-quota-'));
+  const env = { HOME: root, PATH: process.env.PATH };
+  const configDir = join(root, '.config/opencode'), cacheDir = join(root, '.cache/opencode');
+  mkdirSync(configDir, { recursive: true }); mkdirSync(cacheDir, { recursive: true });
+  const dataDir = join(root, '.local/share/opencode'); mkdirSync(dataDir, { recursive: true });
+  const db = new DatabaseSync(join(dataDir, 'opencode.db'));
+  db.exec('CREATE TABLE credential (value TEXT); CREATE TABLE account (id TEXT); CREATE TABLE account_state (id TEXT)'); db.close();
+  const before = readFileSync(join(dataDir, 'opencode.db'));
+  writeFileSync(join(root, '.real-home'), 'must not be copied');
+  writeFileSync(join(configDir, 'opencode.jsonc'), JSON.stringify({ $schema: 'https://opencode.ai/config.json' }));
+  writeFileSync(join(configDir, 'package.json'), JSON.stringify({ dependencies: { '@opencode-ai/plugin': '1.19.0' } }));
+  mkdirSync(join(configDir, 'node_modules'));
+  const catalog = JSON.parse(readFileSync(new URL('./opencode-quota-models.json', import.meta.url), 'utf8'));
+  writeFileSync(join(cacheDir, 'models.json'), JSON.stringify(catalog));
+  const cli = fileURLToPath(new URL('./opencode-quota-cli.mjs', import.meta.url));
+  const marker = join(root, 'private-home');
+  const fetcher: typeof fetch = async (url, init) => {
+    assert.equal(init?.redirect, 'error'); assert.equal(init?.headers, undefined);
+    assert.equal(init?.body, undefined); assert.ok(init?.signal);
+    assert.ok(['https://models.dev/api.json', 'https://opencode.ai/zen/v1/models'].includes(String(url)));
+    return Response.json(String(url).includes('models.dev') ? catalog : { data: Object.keys(catalog.opencode.models).map((id) => ({ id })) });
+  };
+  const options = { cmd: process.execPath, args: [cli, `marker=${marker}`], env, fetcher, timeoutMs: 1500 };
+  const result = await readOpenCodeQuota(options);
+  assert.equal(result.status, 'unknown'); assert.equal(result.remaining, null); assert.equal(result.limit, null);
+  assert.match(result.reason, /non publiés/); assert.match(result.details!, /par défaut opencode\/big-pickle/);
+  assert.match(result.details!, /tarif catalogue nul vérifié/); assert.match(result.details!, /Limites IP possibles/);
+  assert.ok(result.details!.length <= 1000); assert.equal(existsSync(readFileSync(marker, 'utf8')), false);
+  assert.equal(readFileSync(join(root, '.real-home'), 'utf8'), 'must not be copied');
+  writeFileSync(join(configDir, 'opencode.jsonc'), JSON.stringify({ model: 'opencode/other-free' }));
+  const configured = await readOpenCodeQuota(options);
+  assert.match(configured.details!, /configuré opencode\/other-free/);
+  catalog.opencode.models['other-free'].cost.input = 1;
+  const changedPrice = await readOpenCodeQuota(options);
+  assert.match(changedPrice.details!, /Tarification gratuite non confirmée/);
+  assert.doesNotMatch(changedPrice.details!, /tarif catalogue nul vérifié/);
+  for (const mode of ['hang', 'oversized', 'redirect', 'connected']) {
+    const started = performance.now();
+    const failure = await readOpenCodeQuota({ ...options, args: [cli, mode], timeoutMs: mode === 'hang' ? 80 : 1500 });
+    assert.equal(failure.status, 'unknown'); assert.equal(failure.details, undefined);
+    assert.ok(performance.now() - started < 2000, mode);
+  }
+  const lateMarker = join(root, 'stopped-process');
+  await readOpenCodeQuota({ ...options, args: [cli, `hang-marker=${lateMarker}`], timeoutMs: 150 });
+  assert.equal(existsSync(readFileSync(lateMarker, 'utf8')), false);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(existsSync(`${lateMarker}-late`), false);
+  const runnerStarted = performance.now();
+  const shorterRunner = await readOpenCodeQuota({ ...options, args: [cli, 'hang'], timeoutMs: 5000, env: { ...env, AVITY_QUOTA_TIMEOUT_MS: '1000' } });
+  assert.equal(shorterRunner.details, undefined);
+  assert.ok(performance.now() - runnerStarted >= 400 && performance.now() - runnerStarted < 900, 'reserve cleanup time before the runner kills the source');
+  const changed = await readOpenCodeQuota({ ...options, fetcher: async (url, init) => {
+    writeFileSync(join(configDir, 'opencode.jsonc'), JSON.stringify({ model: 'opencode/big-pickle' }));
+    return fetcher(url, init);
+  } });
+  assert.match(changed.reason, /modifiée pendant/);
+  const slow = await readOpenCodeQuota({ ...options, timeoutMs: 80, fetcher: async (_url, init) => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('{'));
+    init!.signal!.addEventListener('abort', () => controller.error(new Error('synthetic-stream-key')), { once: true });
+  } })) });
+  assert.match(slow.reason, /expirée/); assert.ok(!JSON.stringify(slow).includes('synthetic-stream-key'));
+  const secret = 'synthetic-private-upstream-key';
+  const errors = await Promise.all([
+    readOpenCodeQuota({ ...options, fetcher: async () => new Response(secret, { status: 401 }) }),
+    readOpenCodeQuota({ ...options, fetcher: async () => { throw new Error(secret); } }),
+    readOpenCodeQuota({ ...options, fetcher: async () => new Response(secret) }),
+    readOpenCodeQuota({ ...options, fetcher: async () => Response.json({ data: [] }) }),
+    readOpenCodeQuota({ ...options, fetcher: async () => new Response('x'.repeat(13 * 1024 * 1024)) }),
+  ]);
+  for (const failure of errors) {
+    assert.equal(failure.status, 'unknown'); assert.equal(failure.details, undefined);
+    assert.ok(!JSON.stringify(failure).includes(secret));
+  }
+  assert.deepEqual(readFileSync(join(dataDir, 'opencode.db')), before);
+});
+
+test('source OpenCode: configurations ambiguës et connexions ne deviennent jamais un accès gratuit', async () => {
+  const { readOpenCodeQuota } = await import('../src/opencode-quota.ts');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = mkdtempSync(join(home, 'opencode-context-'));
+  const configDir = join(root, '.config/opencode'), cacheDir = join(root, '.cache/opencode'), stateDir = join(root, '.local/state/opencode'), dataDir = join(root, '.local/share/opencode');
+  for (const dir of [configDir, cacheDir, stateDir, dataDir]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(cacheDir, 'models.json'), readFileSync(new URL('./opencode-quota-models.json', import.meta.url)));
+  const env = { HOME: root, PATH: process.env.PATH };
+  const options = { cmd: process.execPath, env, fetcher: (async () => { assert.fail('no request for an unverified context'); }) as typeof fetch };
+  for (const contents of ['{ /* comment */ }', '{"provider":{"private":{"apiKey":"synthetic-config-key"}}}', '{"model":"other/paid"}', '{"plugin":["never-execute"]}']) {
+    writeFileSync(join(configDir, 'opencode.jsonc'), contents);
+    const result = await readOpenCodeQuota(options);
+    assert.equal(result.details, undefined); assert.ok(!JSON.stringify(result).includes('synthetic-config-key'));
+  }
+  writeFileSync(join(configDir, 'opencode.jsonc'), '{}');
+  const keyed = await readOpenCodeQuota({ ...options, env: { ...env, OPENCODE_API_KEY: 'synthetic-env-key' } });
+  assert.match(keyed.reason, /Environnement fournisseur/);
+  const cli = fileURLToPath(new URL('../src/opencode-quota.ts', import.meta.url));
+  const stdout = execFileSync(process.execPath, [cli], { env: { ...env, OPENCODE_API_KEY: 'synthetic-env-key' }, encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.deepEqual(JSON.parse(stdout), keyed);
+  assert.ok(!stdout.includes('synthetic-env-key'));
+  writeFileSync(join(stateDir, 'model.json'), JSON.stringify({ recent: [{ providerID: 'opencode', modelID: 'other-free' }] }));
+  assert.match((await readOpenCodeQuota(options)).reason, /Sélection récente/);
+  unlinkSync(join(stateDir, 'model.json'));
+  writeFileSync(join(dataDir, 'auth.json'), JSON.stringify({ opencode: { type: 'api', key: 'synthetic-auth-key' } }));
+  assert.match((await readOpenCodeQuota(options)).reason, /Connexion OpenCode/);
+  unlinkSync(join(dataDir, 'auth.json'));
+  const db = new DatabaseSync(join(dataDir, 'opencode.db'));
+  db.exec('CREATE TABLE credential (value TEXT); CREATE TABLE account (id TEXT); CREATE TABLE account_state (id TEXT); INSERT INTO credential VALUES (\'synthetic-db-key\')'); db.close();
+  const connected = await readOpenCodeQuota(options);
+  assert.match(connected.reason, /Connexion OpenCode/); assert.ok(!JSON.stringify(connected).includes('synthetic-db-key'));
+  unlinkSync(join(dataDir, 'opencode.db'));
+  writeFileSync(join(configDir, 'package.json'), JSON.stringify({ scripts: { postinstall: 'never-execute' }, dependencies: { '@opencode-ai/plugin': '1.19.0' } }));
+  assert.match((await readOpenCodeQuota(options)).reason, /Extensions OpenCode personnalisées/);
 });
