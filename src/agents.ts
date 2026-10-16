@@ -27,15 +27,25 @@ export async function probeQuota(id: string): Promise<QuotaSnapshot> {
   const source = config.agents[id]?.quota;
   const snapshot: QuotaSnapshot = { agent: id, status: 'unknown', remaining: null, limit: null, unit: null, resetAt: null, checkedAt: new Date().toISOString(), error: 'aucune source de quota configurée' };
   if (!source?.cmd) return recordQuota(snapshot);
+  const timeoutMs = source.timeoutMs ?? 5000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30000) return recordQuota({ ...snapshot, error: 'délai de quota invalide (1 à 30 secondes)' });
   try {
-    const { stdout } = await promisify(execFile)(source.cmd, source.args, { cwd: HOME, env: { ...process.env, ...source.env }, signal: AbortSignal.timeout(5000), killSignal: 'SIGKILL', maxBuffer: 64 * 1024 });
+    const { stdout } = await promisify(execFile)(source.cmd, source.args, { cwd: HOME, env: { ...process.env, ...source.env }, signal: AbortSignal.timeout(timeoutMs), killSignal: 'SIGKILL', maxBuffer: 64 * 1024 });
     let value: any;
     try { value = JSON.parse(stdout); } catch { throw new Error('JSON de quota invalide'); }
-    if (!value || typeof value !== 'object' || Array.isArray(value) || !Number.isFinite(value.remaining) || value.remaining < 0 || !Number.isFinite(value.limit) || value.limit < value.remaining || typeof value.unit !== 'string' || !value.unit.trim() || value.unit.length > 80 || /[\x00-\x1f]/.test(value.unit) || (value.resetAt !== undefined && (typeof value.resetAt !== 'string' || !/^\d{4}-\d\d-\d\dT/.test(value.resetAt) || !Number.isFinite(Date.parse(value.resetAt))))) throw new Error('schéma de quota invalide');
+    const description = (text: unknown, max: number) => typeof text === 'string' && !!text.trim() && text.length <= max && !/[\x00-\x1f]/.test(text);
+    if (!value || typeof value !== 'object' || Array.isArray(value) || (value.details !== undefined && !description(value.details, 1000))) throw new Error('schéma de quota invalide');
     if (config.agents[id]?.quota !== source) return recordQuota({ ...snapshot, error: 'configuration modifiée pendant la mesure : relance la vérification' });
-    return recordQuota({ ...snapshot, status: value.remaining === 0 ? 'exhausted' : 'available', remaining: value.remaining, limit: value.limit, unit: value.unit, resetAt: value.resetAt ? new Date(value.resetAt).toISOString() : null, error: null });
+    const details = value.details ? redact(value.details) : null;
+    if (value.status === 'unknown') {
+      if (value.remaining !== null || value.limit !== null || value.unit != null || value.resetAt != null || !description(value.reason, 500)) throw new Error('schéma de quota invalide');
+      return recordQuota({ ...snapshot, details, error: redact(value.reason) });
+    }
+    const status = value.remaining === 0 ? 'exhausted' : 'available';
+    if ((value.status !== undefined && value.status !== status) || !Number.isFinite(value.remaining) || value.remaining < 0 || !Number.isFinite(value.limit) || value.limit < value.remaining || !description(value.unit, 80) || (value.resetAt !== undefined && (typeof value.resetAt !== 'string' || !/^\d{4}-\d\d-\d\dT/.test(value.resetAt) || !Number.isFinite(Date.parse(value.resetAt))))) throw new Error('schéma de quota invalide');
+    return recordQuota({ ...snapshot, status, remaining: value.remaining, limit: value.limit, unit: value.unit, resetAt: value.resetAt ? new Date(value.resetAt).toISOString() : null, error: null, details });
   } catch (e: any) {
-    const error = ['JSON de quota invalide', 'schéma de quota invalide'].includes(e.message) ? e.message : e.name === 'AbortError' ? 'commande de quota expirée après cinq secondes' : 'commande de quota en échec';
+    const error = ['JSON de quota invalide', 'schéma de quota invalide'].includes(e.message) ? e.message : e.name === 'AbortError' ? `commande de quota expirée après ${timeoutMs / 1000} s` : 'commande de quota en échec';
     return recordQuota({ ...snapshot, error });
   }
 }

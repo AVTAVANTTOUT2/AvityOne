@@ -1035,6 +1035,71 @@ test('agents: readiness, commandes ACP et authentification inconnue ou requise',
   } finally { delete config.agents.adminfake; }
 });
 
+test('quotas: migration additive conserve les anciennes mesures après deux démarrages', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const legacyHome = mkdtempSync(join(home, 'legacy-quota-'));
+  const legacy = new DatabaseSync(join(legacyHome, 'avity.db'));
+  legacy.exec(`CREATE TABLE agent_quotas (agent TEXT PRIMARY KEY, source_hash TEXT NOT NULL, status TEXT NOT NULL,
+    remaining REAL, quota_limit REAL, unit TEXT, reset_at TEXT, checked_at TEXT NOT NULL, error TEXT);
+    INSERT INTO agent_quotas VALUES('saved','source','available',12,100,'requests',NULL,'2026-01-01',NULL)`);
+  legacy.close();
+  const script = `await import(${JSON.stringify(new URL('../src/admin.ts', import.meta.url).href)});
+    const { db } = await import(${JSON.stringify(new URL('../src/store.ts', import.meta.url).href)});
+    console.log(JSON.stringify(db.prepare("SELECT remaining, details FROM agent_quotas WHERE agent = 'saved'").get()));`;
+  for (let i = 0; i < 2; i++) {
+    const result = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, AVITY_HOME: legacyHome }, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(result), { remaining: 12, details: null });
+  }
+});
+
+test('quotas: le délai propre à une source est borné et conservé par la configuration', async () => {
+  const { probeQuota } = await import('../src/agents.ts');
+  const { publicConfig, updateConfig } = await import('../src/config.ts');
+  const saved = structuredClone(config);
+  try {
+    const agents = publicConfig().agents;
+    agents.fake.quota = { cmd: process.execPath, args: [fileURLToPath(new URL('./quota-source.mjs', import.meta.url))], env: { QUOTA_MODE: 'timeout' }, timeoutMs: 1000 };
+    updateConfig({ agents });
+    assert.equal(publicConfig().agents.fake.quota.timeoutMs, 1000);
+    assert.match((await probeQuota('fake')).error!, /expirée après 1 s/);
+    for (const timeoutMs of [0, 999, 30001, 1500.5]) {
+      assert.throws(() => updateConfig({ agents: { ...publicConfig().agents, fake: { ...config.agents.fake, quota: { ...config.agents.fake.quota, timeoutMs } } } }), /quota/);
+    }
+  } finally { Object.assign(config, saved); }
+});
+
+test('quotas: une source sans plafond publié conserve sa preuve sans inventer de solde', async () => {
+  const { probeQuota } = await import('../src/agents.ts');
+  const { agentQuota, assertBudget } = await import('../src/admin.ts');
+  const source = { cmd: process.execPath, args: [fileURLToPath(new URL('./quota-source.mjs', import.meta.url))], env: { QUOTA_JSON: '' } };
+  config.agents.unpublished = { ...config.agents.fake, quota: source };
+  const evidence = { status: 'unknown', remaining: null, limit: null, reason: 'Plafond non publié par le fournisseur.', details: 'Modèle gratuit temporairement ; aucune promesse de capacité illimitée.' };
+  try {
+    source.env.QUOTA_JSON = JSON.stringify(evidence);
+    const result = await probeQuota('unpublished');
+    assert.equal(result.error, evidence.reason);
+    assert.equal(result.details, evidence.details);
+    assert.equal(result.remaining, null);
+    assert.equal(result.limit, null);
+    assert.equal(agentQuota('unpublished').details, evidence.details);
+    assert.doesNotThrow(() => assertBudget('unpublished'));
+    source.env.QUOTA_JSON = JSON.stringify({ remaining: 0.001, limit: 1, unit: 'USD', details: 'Un crédit mesuré positif reste utilisable.' });
+    assert.equal((await probeQuota('unpublished')).status, 'available');
+    assert.doesNotThrow(() => assertBudget('unpublished'));
+    run("UPDATE agent_quotas SET checked_at = ? WHERE agent = 'unpublished'", new Date(Date.now() - 300_001).toISOString());
+    assert.equal(agentQuota('unpublished').status, 'unknown');
+    for (const invalid of [{ ...evidence, remaining: 0 }, { ...evidence, reason: '' }, { ...evidence, details: 'x'.repeat(1001) }, { ...evidence, details: 'ligne\ninterdite' }]) {
+      source.env.QUOTA_JSON = JSON.stringify(invalid);
+      assert.equal((await probeQuota('unpublished')).error, 'schéma de quota invalide');
+    }
+    const secrets = ['synthetic-private-provider-key', 'synthetic-inline-key', 'synthetic-auth-key'];
+    source.args.push('--token', secrets[0], `--api-key=${secrets[1]}`, `Authorization: Bearer ${secrets[2]}`);
+    source.env.QUOTA_JSON = JSON.stringify({ ...evidence, reason: secrets.join(' '), details: `Source : ${secrets.join(' ')}` });
+    const safe = await probeQuota('unpublished');
+    for (const secret of secrets) assert.ok(!JSON.stringify(safe).includes(secret), 'aucun secret des arguments dans la mesure publique');
+  } finally { delete config.agents.unpublished; }
+});
+
 test('quotas: source locale validée, secrets masqués et épuisement expirant', async () => {
   const { probeAgent, probeQuota } = await import('../src/agents.ts');
   const { usageReport, agentQuota, assertBudget } = await import('../src/admin.ts');
@@ -1090,7 +1155,7 @@ test('quotas: absence, erreur, JSON invalide, schéma invalide et délai restent
     source.env = { QUOTA_MODE: 'timeout' };
     const start = performance.now(), result = await probeQuota('quotaError');
     assert.equal(result.status, 'unknown');
-    assert.match(result.error!, /cinq secondes/);
+    assert.match(result.error!, /après 5 s$/);
     assert.ok(performance.now() - start < 6500, 'le délai de la source est borné');
   } finally { Object.assign(config, saved); writeFileSync(join(home, 'config.json'), JSON.stringify(saved)); }
 });

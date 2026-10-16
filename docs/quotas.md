@@ -1,6 +1,6 @@
 # Sources de quotas des agents
 
-Les sources livrées interrogent le compte déjà connecté sur le serveur. Elles ne
+Les sources livrées interrogent le compte connecté ou le contexte anonyme vérifiable sur le serveur. Elles ne
 lancent aucun prompt, n’installent rien et ne changent pas la configuration
 d’AvityOne. Node 24 et le CLI correspondant doivent être disponibles pour
 l’utilisateur du service.
@@ -9,8 +9,8 @@ l’utilisateur du service.
 |---|---|---|
 | Codex | `codex app-server`, méthode officielle `account/rateLimits/read` | Compte ChatGPT connecté au CLI ; une clé API seule ne fournit pas ce quota. |
 | Claude Code | GET fixe `https://api.anthropic.com/api/oauth/usage`, utilisé par le CLI natif | Contrat interne, non garanti comme API publique ; nécessite la connexion Claude dans un fichier local. |
-| Cursor | Aucune source de quota du compte intégrée | `status` prouve une connexion, pas un solde. Le quota reste inconnu. |
-| OpenCode | Aucune source de quota fournisseur intégrée | Les statistiques locales de tokens/coût ne donnent pas le plafond du fournisseur. Le quota reste inconnu. |
+| Cursor | Méthodes natives du tableau de bord Cursor avec la connexion du CLI | Contrat interne vérifié ; total natif et réserves distinctes, restrictions et crédits supplémentaires. Un total positif ne rend pas tous les modèles disponibles. |
+| OpenCode | Modèle global résolu par le CLI dans un contexte temporaire, catalogue fournisseur public | L'accès anonyme gratuit peut être vérifié ; aucun plafond restant n'est publié pour Big Pickle. Le quota reste inconnu avec une explication précise. |
 
 ## Configuration
 
@@ -39,6 +39,32 @@ Valeur de `agents.claude.quota` :
 }
 ```
 
+Pour Cursor et OpenCode, conserver également leur définition complète et utiliser
+respectivement ces valeurs pour leur propriété `quota` :
+
+```json
+{ "cmd": "/usr/bin/node", "args": ["/chemin/avityone/src/cursor-quota.ts"] }
+```
+
+```json
+{ "cmd": "/usr/bin/node", "args": ["/chemin/avityone/src/opencode-quota.ts"], "timeoutMs": 20000 }
+```
+
+Cursor lit les identifiants existants du CLI sans les modifier ni les afficher.
+Les appels vont uniquement vers les services Cursor attendus, sans suivre de
+redirection. Les réserves de modèles sont indiquées séparément dans `details`.
+L'épuisement d'une seule réserve ne bloque pas tout l'agent : l'épuisement global
+exige un blocage fournisseur explicite et l'absence vérifiée de capacité de
+secours, de crédits ou de paiement à l'usage. La source ne modifie aucun plafond
+et n'active aucun paiement supplémentaire.
+
+OpenCode n'a pas de quota commun à tous ses fournisseurs. La source vérifie le
+contexte global anonyme qu'elle sait résoudre ; une configuration ambiguë ou un
+autre fournisseur reste inconnu. Les paramètres propres aux projets et aux
+sessions ne sont pas couverts par cette mesure globale. Les statistiques locales
+de tokens ne sont jamais transformées en solde. Big Pickle est gratuit
+temporairement, avec des limitations possibles : cela ne signifie pas illimité.
+
 Codex utilise son authentification native, notamment `CODEX_HOME` si défini.
 Son CLI doit être présent dans le `PATH` du service. Le processus auxiliaire et
 ses descendants sont arrêtés après la mesure ; aucune conversation n’est créée.
@@ -58,14 +84,20 @@ sont prises en compte.
 
 ## Interprétation et erreurs
 
-La sortie valide contient uniquement `remaining`, `limit: 100`, `unit` et, si
-fournie, `resetAt`. Le pourcentage restant correspond à la fenêtre la plus
-contraignante parmi celles applicables. Ce n’est ni un nombre de tokens ni une
+La sortie chiffrée contient `remaining`, `limit`, `unit` et, si fournie,
+`resetAt`, ainsi qu'un texte `details` facultatif (1 000 caractères maximum).
+Pour Codex et Claude, le pourcentage restant correspond à la fenêtre la plus
+contraignante parmi celles applicables. Ce n'est ni un nombre de tokens ni une
 estimation en dollars. Une disponibilité positive ne garantit pas l’accès à
 tous les modèles ni l’absence d’autres restrictions du fournisseur.
 
+Une source sans quota chiffré peut retourner `status: "unknown"`, `remaining: null`,
+`limit: null`, un `reason` explicite (500 caractères maximum) et `details`.
+Ces informations sont conservées sans inventer de nombre ni bloquer les prompts.
+Un accès gratuit n'est pas une capacité illimitée.
+
 Les réponses manquantes, périmées, mal formées ou trop grandes, les erreurs
-d’authentification/réseau et le délai de 4,2 secondes font échouer la commande.
+d’authentification/réseau et le dépassement du délai font échouer la commande.
 AvityOne conserve alors le statut **inconnu**, sans inventer de valeur. Le CLI
 émet sur stderr un motif borné et fixe, sans réponse brute ni identifiant ; le
 runner d’AvityOne affiche son erreur générique de commande. Aucune requête HTTP
@@ -73,7 +105,10 @@ Claude n’accepte de redirection. Si le forfait est épuisé mais que le fourni
 annonce des crédits supplémentaires, le solde global reste également inconnu :
 la source ne bloque pas à tort l’utilisation de ces crédits.
 
-Le runner d’AvityOne limite chaque mesure à cinq secondes et invalide les
+Le runner d’AvityOne limite chaque mesure à cinq secondes par défaut ;
+`quota.timeoutMs` accepte un entier de 1 000 à 30 000 ms. OpenCode utilise ici
+20 secondes pour laisser son CLI résoudre le modèle dans un environnement temporaire.
+Les autres adaptateurs ont une limite interne de 4,2 secondes. Le serveur invalide les
 snapshots après cinq minutes ou à leur remise à zéro. Une vérification manuelle
 suffit ; éviter d’interroger le fournisseur en boucle, notamment après un 429.
 
@@ -82,9 +117,15 @@ suffit ; éviter d’interroger le fournisseur en boucle, notamment après un 42
 - [Codex App Server : quotas ChatGPT](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 - [Claude Code : données officielles de la ligne de statut](https://code.claude.com/docs/en/statusline) ; cette interface documente les pourcentages et remises à zéro, mais ne constitue pas une documentation publique du point d’accès OAuth interne utilisé ici.
 - [Commandes du CLI Cursor](https://cursor.com/docs/cli/reference/parameters).
+- [Cursor : réserves d'usage et limites](https://cursor.com/help/models-and-usage/usage-limits).
 - [Commandes du CLI OpenCode](https://opencode.ai/docs/cli/).
+- [OpenCode Zen : modèles gratuits et facturation](https://docs.opencode.ai/docs/zen/).
 
 La lecture réelle a été vérifiée en préproduction avec Codex CLI 0.162.1 et
 Claude Code 2.1.300. Les tests automatisés utilisent uniquement des réponses
 simulées, des fichiers temporaires et un faux processus CLI. Aucun secret ou
 identifiant de compte ne figure dans les fixtures.
+
+Le stockage ajoute une colonne nullable `details` sans modifier les anciennes mesures.
+Les sauvegardes restent soumises au contrôle de schéma : restaurer une sauvegarde
+antérieure avec la version qui l'a créée avant de mettre à jour l'application.

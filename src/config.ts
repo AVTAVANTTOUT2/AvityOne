@@ -3,7 +3,7 @@ import { join, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 
-export type AgentDef = { name: string; cmd: string; args: string[]; env?: Record<string, string>; authMethod?: string; strengths: string; quota?: { cmd: string; args: string[]; env?: Record<string, string> } };
+export type AgentDef = { name: string; cmd: string; args: string[]; env?: Record<string, string>; authMethod?: string; strengths: string; quota?: { cmd: string; args: string[]; env?: Record<string, string>; timeoutMs?: number } };
 export type RouteRule = { match: string; agent: string; mode?: 'plan' | 'agent' };
 export type ExtraMcp = { name: string; command: string; args: string[]; env: Record<string, string>; enabled: boolean };
 
@@ -67,7 +67,7 @@ const strings = (v: unknown): v is string[] => Array.isArray(v) && v.length <= 1
 const fail = (key: string): never => { throw Object.assign(new Error(`configuration invalide : ${key}`), { status: 400 }); };
 const maskEnv = (env: Record<string, string> = {}) => Object.fromEntries(Object.keys(env).map((k) => [k, MASK]));
 const sensitiveArg = /(?:token|api[-_]?key|password|secret|authorization|cookie)/i;
-const maskArgs = (args: string[]) => args.map((arg, i) => (i > 0 && sensitiveArg.test(args[i - 1]) && args[i - 1].startsWith('-') && !args[i - 1].includes('=')) || /^(?:sk-|Bearer )/i.test(arg) || (arg.includes('=') && sensitiveArg.test(arg.split('=')[0])) || (arg.includes(':') && sensitiveArg.test(arg.split(':')[0])) ? MASK : arg);
+export const maskArgs = (args: string[]) => args.map((arg, i) => (i > 0 && sensitiveArg.test(args[i - 1]) && args[i - 1].startsWith('-') && !args[i - 1].includes('=')) || /^(?:sk-|Bearer )/i.test(arg) || (arg.includes('=') && sensitiveArg.test(arg.split('=')[0])) || (arg.includes(':') && sensitiveArg.test(arg.split(':')[0])) ? MASK : arg);
 function restoreArgs(args: string[], old: string[] = []) {
   const masked = maskArgs(old);
   return args.map((arg, i) => {
@@ -81,7 +81,7 @@ function restoreArgs(args: string[], old: string[] = []) {
 export function publicConfig() {
   const { token: _token, ...safe } = config;
   return { ...safe,
-    agents: Object.fromEntries(Object.entries(safe.agents).map(([k, a]) => [k, { ...a, args: maskArgs(a.args), env: maskEnv(a.env), quota: { cmd: a.quota?.cmd ?? '', args: maskArgs(a.quota?.args ?? []), env: maskEnv(a.quota?.env) } }])),
+    agents: Object.fromEntries(Object.entries(safe.agents).map(([k, a]) => [k, { ...a, args: maskArgs(a.args), env: maskEnv(a.env), quota: { cmd: a.quota?.cmd ?? '', args: maskArgs(a.quota?.args ?? []), env: maskEnv(a.quota?.env), ...(a.quota?.timeoutMs === undefined ? {} : { timeoutMs: a.quota.timeoutMs }) } }])),
     mcpServers: safe.mcpServers.map((s) => ({ ...s, args: maskArgs(s.args), env: maskEnv(s.env) })),
     transcription: { ...safe.transcription, args: maskArgs(safe.transcription.args) },
   };
@@ -121,8 +121,8 @@ export function updateConfig(patch: unknown) {
         if (!/^[a-zA-Z0-9_-]{1,40}$/.test(id) || ['__proto__', 'constructor', 'prototype'].includes(id) || !object(a) || !text(a.name, 100) || !text(a.cmd) || !a.cmd || !strings(a.args) || !text(a.strengths) || (a.authMethod !== undefined && !text(a.authMethod))) return fail(key);
         let quota: AgentDef['quota'];
         if (a.quota !== undefined) {
-          if (!object(a.quota) || !text(a.quota.cmd) || !strings(a.quota.args)) return fail('quota');
-          quota = { cmd: a.quota.cmd, args: restoreArgs(a.quota.args, config.agents[id]?.quota?.args), env: environment(a.quota.env ?? {}, config.agents[id]?.quota?.env) };
+          if (!object(a.quota) || !text(a.quota.cmd) || !strings(a.quota.args) || (a.quota.timeoutMs !== undefined && (!Number.isInteger(a.quota.timeoutMs) || a.quota.timeoutMs < 1000 || a.quota.timeoutMs > 30000))) return fail('quota');
+          quota = { cmd: a.quota.cmd, args: restoreArgs(a.quota.args, config.agents[id]?.quota?.args), env: environment(a.quota.env ?? {}, config.agents[id]?.quota?.env), ...(a.quota.timeoutMs === undefined ? {} : { timeoutMs: a.quota.timeoutMs }) };
         }
         value[id] = { name: a.name, cmd: a.cmd, args: restoreArgs(a.args, config.agents[id]?.args), strengths: a.strengths, ...(a.authMethod ? { authMethod: a.authMethod } : {}), env: environment(a.env ?? {}, config.agents[id]?.env), ...(quota ? { quota } : {}) };
       }
