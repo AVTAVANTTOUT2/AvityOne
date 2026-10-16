@@ -37,7 +37,8 @@ Pistes : claude-code-router (routage par type de requête), LiteLLM (appels LLM 
 Portée : la bascule automatique couvre les échecs de connexion avant envoi du travail ; après envoi, la relance
 est explicite. Le classement utilise des évaluations sur un texte attendu et la durée des réponses. Les serveurs
 MCP supplémentaires doivent être installés et configurés sur l'hôte.
-Le quota provient d'une commande locale configurée pour le fournisseur ; sans source valide, il reste inconnu.
+Le quota provient d'une commande locale configurée pour le fournisseur ; les sources Codex et Claude sont fournies
+dans le [guide des quotas](docs/quotas.md). Sans source valide, notamment pour Cursor et OpenCode, il reste inconnu.
 La disponibilité est vérifiée par initialisation ACP et création de session, sans prompt facturable ; elle ne garantit
 pas qu'un fournisseur acceptera une prochaine requête, et l'authentification reste inconnue si le protocole ne la confirme pas.
 
@@ -158,7 +159,8 @@ les doublons normalisés ; les contradictions et péremptions concernent les fai
 Pistes : happy (client mobile pour Claude et Codex).
 
 Portée : PWA sur HTTPS/localhost et navigateur compatible ; aucun travail de session hors ligne. Sans reconnaissance
-native, la dictée exige une commande de transcription serveur configurée. Les appareils physiques restent à qualifier.
+native, la dictée exige une commande de transcription serveur configurée ; le [guide local](docs/dictee.md) décrit
+le moteur CPU multilingue. Les appareils physiques restent à qualifier.
 
 ## Administration et exploitation
 

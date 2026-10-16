@@ -7,6 +7,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Ajouté
 
+- Sources de quotas réels pour Codex et Claude, sans convertir les statistiques locales en solde fournisseur.
+- Installation isolée d'une dictée CPU avec faster-whisper et modèle multilingue, sans dépendance runtime Node.
 - **Administration des agents** : installation et connexion de Claude Code, Codex, Cursor et OpenCode depuis le
   catalogue, vérification ACP de disponibilité, affichage des erreurs d'authentification, commandes natives et
   autocomplétion. Les résultats absents ou non exposés restent inconnus.
@@ -110,6 +112,8 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- L'attente d'une autorisation humaine suspend les délais d'inactivité ACP ; la reprise repart avec un délai complet.
+- Un agent arrêté après expiration peut être reconnecté au tour suivant au lieu de conserver une connexion morte.
 - Une fusion échouée ne laisse plus une sélection de branches partiellement intégrée : le résultat est préparé
   isolément et les worktrees restent disponibles en cas de conflit, de contrôle échoué ou de revue défavorable.
 - Une commande de validation ou une revue ne peut plus changer silencieusement le commit validé puis faire
