@@ -1,0 +1,1 @@
+{"opencode":{"id":"opencode","env":["OPENCODE_API_KEY"],"models":{"big-pickle":{"id":"big-pickle","name":"Big Pickle","cost":{"input":0,"output":0,"cache_read":0,"cache_write":0}},"other-free":{"id":"other-free","name":"Other Free","cost":{"input":0,"output":0}},"paid":{"id":"paid","name":"Paid","cost":{"input":2,"output":8}}}}}

@@ -1654,3 +1654,118 @@ test('Cursor quotas: lectures natives bornées, sans mutation, secret ni identit
   assert.equal(Object.hasOwn(absent, 'resetAt'), false);
   assert.equal(Object.hasOwn(absent, 'details'), false);
 });
+
+test('source OpenCode: sélection native isolée, catalogue courant et aucun quota inventé', async () => {
+  const { readOpenCodeQuota } = await import('../src/opencode-quota.ts');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = mkdtempSync(join(home, 'opencode-quota-'));
+  const env = { HOME: root, PATH: process.env.PATH };
+  const configDir = join(root, '.config/opencode'), cacheDir = join(root, '.cache/opencode');
+  mkdirSync(configDir, { recursive: true }); mkdirSync(cacheDir, { recursive: true });
+  const dataDir = join(root, '.local/share/opencode'); mkdirSync(dataDir, { recursive: true });
+  const db = new DatabaseSync(join(dataDir, 'opencode.db'));
+  db.exec('CREATE TABLE credential (value TEXT); CREATE TABLE account (id TEXT); CREATE TABLE account_state (id TEXT)'); db.close();
+  const before = readFileSync(join(dataDir, 'opencode.db'));
+  writeFileSync(join(root, '.real-home'), 'must not be copied');
+  writeFileSync(join(configDir, 'opencode.jsonc'), JSON.stringify({ $schema: 'https://opencode.ai/config.json' }));
+  writeFileSync(join(configDir, 'package.json'), JSON.stringify({ dependencies: { '@opencode-ai/plugin': '1.19.0' } }));
+  mkdirSync(join(configDir, 'node_modules'));
+  const catalog = JSON.parse(readFileSync(new URL('./opencode-quota-models.json', import.meta.url), 'utf8'));
+  writeFileSync(join(cacheDir, 'models.json'), JSON.stringify(catalog));
+  const cli = fileURLToPath(new URL('./opencode-quota-cli.mjs', import.meta.url));
+  const marker = join(root, 'private-home');
+  const fetcher: typeof fetch = async (url, init) => {
+    assert.equal(init?.redirect, 'error'); assert.equal(init?.headers, undefined);
+    assert.equal(init?.body, undefined); assert.ok(init?.signal);
+    assert.ok(['https://models.dev/api.json', 'https://opencode.ai/zen/v1/models'].includes(String(url)));
+    return Response.json(String(url).includes('models.dev') ? catalog : { data: Object.keys(catalog.opencode.models).map((id) => ({ id })) });
+  };
+  const options = { cmd: process.execPath, args: [cli, `marker=${marker}`], env, fetcher, timeoutMs: 1500 };
+  const result = await readOpenCodeQuota(options);
+  assert.equal(result.status, 'unknown'); assert.equal(result.remaining, null); assert.equal(result.limit, null);
+  assert.match(result.reason, /non publiés/); assert.match(result.details!, /par défaut opencode\/big-pickle/);
+  assert.match(result.details!, /tarif catalogue nul vérifié/); assert.match(result.details!, /Limites IP possibles/);
+  assert.ok(result.details!.length <= 1000); assert.equal(existsSync(readFileSync(marker, 'utf8')), false);
+  assert.equal(readFileSync(join(root, '.real-home'), 'utf8'), 'must not be copied');
+  writeFileSync(join(configDir, 'opencode.jsonc'), JSON.stringify({ model: 'opencode/other-free' }));
+  const configured = await readOpenCodeQuota(options);
+  assert.match(configured.details!, /configuré opencode\/other-free/);
+  catalog.opencode.models['other-free'].cost.input = 1;
+  const changedPrice = await readOpenCodeQuota(options);
+  assert.match(changedPrice.details!, /Tarification gratuite non confirmée/);
+  assert.doesNotMatch(changedPrice.details!, /tarif catalogue nul vérifié/);
+  for (const mode of ['hang', 'oversized', 'redirect', 'connected']) {
+    const started = performance.now();
+    const failure = await readOpenCodeQuota({ ...options, args: [cli, mode], timeoutMs: mode === 'hang' ? 80 : 1500 });
+    assert.equal(failure.status, 'unknown'); assert.equal(failure.details, undefined);
+    assert.ok(performance.now() - started < 2000, mode);
+  }
+  const lateMarker = join(root, 'stopped-process');
+  await readOpenCodeQuota({ ...options, args: [cli, `hang-marker=${lateMarker}`], timeoutMs: 150 });
+  assert.equal(existsSync(readFileSync(lateMarker, 'utf8')), false);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(existsSync(`${lateMarker}-late`), false);
+  const runnerStarted = performance.now();
+  const shorterRunner = await readOpenCodeQuota({ ...options, args: [cli, 'hang'], timeoutMs: 5000, env: { ...env, AVITY_QUOTA_TIMEOUT_MS: '1000' } });
+  assert.equal(shorterRunner.details, undefined);
+  assert.ok(performance.now() - runnerStarted >= 400 && performance.now() - runnerStarted < 900, 'reserve cleanup time before the runner kills the source');
+  const changed = await readOpenCodeQuota({ ...options, fetcher: async (url, init) => {
+    writeFileSync(join(configDir, 'opencode.jsonc'), JSON.stringify({ model: 'opencode/big-pickle' }));
+    return fetcher(url, init);
+  } });
+  assert.match(changed.reason, /modifiée pendant/);
+  const slow = await readOpenCodeQuota({ ...options, timeoutMs: 80, fetcher: async (_url, init) => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('{'));
+    init!.signal!.addEventListener('abort', () => controller.error(new Error('synthetic-stream-key')), { once: true });
+  } })) });
+  assert.match(slow.reason, /expirée/); assert.ok(!JSON.stringify(slow).includes('synthetic-stream-key'));
+  const secret = 'synthetic-private-upstream-key';
+  const errors = await Promise.all([
+    readOpenCodeQuota({ ...options, fetcher: async () => new Response(secret, { status: 401 }) }),
+    readOpenCodeQuota({ ...options, fetcher: async () => { throw new Error(secret); } }),
+    readOpenCodeQuota({ ...options, fetcher: async () => new Response(secret) }),
+    readOpenCodeQuota({ ...options, fetcher: async () => Response.json({ data: [] }) }),
+    readOpenCodeQuota({ ...options, fetcher: async () => new Response('x'.repeat(13 * 1024 * 1024)) }),
+  ]);
+  for (const failure of errors) {
+    assert.equal(failure.status, 'unknown'); assert.equal(failure.details, undefined);
+    assert.ok(!JSON.stringify(failure).includes(secret));
+  }
+  assert.deepEqual(readFileSync(join(dataDir, 'opencode.db')), before);
+});
+
+test('source OpenCode: configurations ambiguës et connexions ne deviennent jamais un accès gratuit', async () => {
+  const { readOpenCodeQuota } = await import('../src/opencode-quota.ts');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = mkdtempSync(join(home, 'opencode-context-'));
+  const configDir = join(root, '.config/opencode'), cacheDir = join(root, '.cache/opencode'), stateDir = join(root, '.local/state/opencode'), dataDir = join(root, '.local/share/opencode');
+  for (const dir of [configDir, cacheDir, stateDir, dataDir]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(cacheDir, 'models.json'), readFileSync(new URL('./opencode-quota-models.json', import.meta.url)));
+  const env = { HOME: root, PATH: process.env.PATH };
+  const options = { cmd: process.execPath, env, fetcher: (async () => { assert.fail('no request for an unverified context'); }) as typeof fetch };
+  for (const contents of ['{ /* comment */ }', '{"provider":{"private":{"apiKey":"synthetic-config-key"}}}', '{"model":"other/paid"}', '{"plugin":["never-execute"]}']) {
+    writeFileSync(join(configDir, 'opencode.jsonc'), contents);
+    const result = await readOpenCodeQuota(options);
+    assert.equal(result.details, undefined); assert.ok(!JSON.stringify(result).includes('synthetic-config-key'));
+  }
+  writeFileSync(join(configDir, 'opencode.jsonc'), '{}');
+  const keyed = await readOpenCodeQuota({ ...options, env: { ...env, OPENCODE_API_KEY: 'synthetic-env-key' } });
+  assert.match(keyed.reason, /Environnement fournisseur/);
+  const cli = fileURLToPath(new URL('../src/opencode-quota.ts', import.meta.url));
+  const stdout = execFileSync(process.execPath, [cli], { env: { ...env, OPENCODE_API_KEY: 'synthetic-env-key' }, encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.deepEqual(JSON.parse(stdout), keyed);
+  assert.ok(!stdout.includes('synthetic-env-key'));
+  writeFileSync(join(stateDir, 'model.json'), JSON.stringify({ recent: [{ providerID: 'opencode', modelID: 'other-free' }] }));
+  assert.match((await readOpenCodeQuota(options)).reason, /Sélection récente/);
+  unlinkSync(join(stateDir, 'model.json'));
+  writeFileSync(join(dataDir, 'auth.json'), JSON.stringify({ opencode: { type: 'api', key: 'synthetic-auth-key' } }));
+  assert.match((await readOpenCodeQuota(options)).reason, /Connexion OpenCode/);
+  unlinkSync(join(dataDir, 'auth.json'));
+  const db = new DatabaseSync(join(dataDir, 'opencode.db'));
+  db.exec('CREATE TABLE credential (value TEXT); CREATE TABLE account (id TEXT); CREATE TABLE account_state (id TEXT); INSERT INTO credential VALUES (\'synthetic-db-key\')'); db.close();
+  const connected = await readOpenCodeQuota(options);
+  assert.match(connected.reason, /Connexion OpenCode/); assert.ok(!JSON.stringify(connected).includes('synthetic-db-key'));
+  unlinkSync(join(dataDir, 'opencode.db'));
+  writeFileSync(join(configDir, 'package.json'), JSON.stringify({ scripts: { postinstall: 'never-execute' }, dependencies: { '@opencode-ai/plugin': '1.19.0' } }));
+  assert.match((await readOpenCodeQuota(options)).reason, /Extensions OpenCode personnalisées/);
+});
