@@ -1,0 +1,57 @@
+name: macOS
+
+# Application macOS (macos/) et qualification du moteur sur macOS. Le job `ci` (ci.yml) reste la porte de merge.
+on:
+  push:
+    paths: ['macos/**', 'src/**', 'test/**', 'package.json', 'package-lock.json', '.github/workflows/macos.yml']
+  pull_request:
+    branches: [preprod, main]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Poppler pour les tests d'extraction PDF
+        run: brew install --quiet poppler
+      - run: npm test
+
+  app:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Build
+        run: swift build
+      - name: Tests (dont l'intégration avec le moteur réel)
+        env:
+          AVITY_ENGINE_TEST: '1'
+        run: swift test
+      - name: AvityOne.app et DMG
+        run: bash scripts/build-app.sh
+      - name: Test de fumée du bundle
+        run: |
+          home="$(mktemp -d)"
+          AVITY_HOME="$home" build/AvityOne.app/Contents/MacOS/AvityOne --smoke-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AvityOne-macOS
+          path: macos/build/AvityOne.dmg
+          if-no-files-found: error
