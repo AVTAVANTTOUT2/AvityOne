@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { normalizeCodexQuota, normalizeClaudeQuota, readCodexQuota, readClaudeQuota } from '../src/quota-source.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'avity-test-'));
 process.env.AVITY_HOME = home;
@@ -96,6 +97,98 @@ test('hub: plan mode asks before edits, and switching agent hands off context', 
   const snap2 = await waitIdle(s.id);
   const info = snap2.items.filter((i: any) => i.type === 'info').at(-1);
   assert.match(info.text, /Fake2.*reprise/);
+});
+
+test('permissions: human wait pauses inactivity, then approval restarts the agent deadline', async () => {
+  const fixture = join(home, 'permission-agent.mjs');
+  writeFileSync(fixture, `
+    import { createInterface } from 'node:readline';
+    const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+    let prompt;
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const m = JSON.parse(line);
+      if (m.method === 'initialize') return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      if (m.method === 'session/new') return send({ id: m.id, result: { sessionId: 'permission-fixture' } });
+      if (m.method === 'session/prompt') {
+        prompt = m;
+        return send({ id: 'permission-1', method: 'session/request_permission', params: {
+          sessionId: 'permission-fixture', toolCall: { toolCallId: 'edit-1', kind: 'edit', title: 'Modifier le fichier' },
+          options: [{ optionId: 'yes', name: 'Autoriser', kind: 'allow_once' }]
+        } });
+      }
+      if (m.id === 'permission-1' && m.result?.outcome?.optionId === 'yes' &&
+          !prompt.params.prompt.some((b) => b.text?.includes('stall-after-approval'))) {
+        setTimeout(() => {
+          send({ method: 'session/update', params: { sessionId: 'permission-fixture', update: {
+            sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Travail terminé après autorisation' }
+          } } });
+          send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+        }, 100);
+      }
+    });
+  `);
+  config.agents.permission = { name: 'Permission', cmd: process.execPath, args: [fixture], strengths: '' };
+  const previous = config.stallTimeoutMs;
+  config.stallTimeoutMs = 200;
+  const p = await hub.createProject({ name: 'permission-wait' });
+  const sessions: string[] = [];
+  try {
+    for (const shouldStall of [false, true]) {
+      const s = hub.createSession(p.id); sessions.push(s.id);
+      hub.setAutoApprove(s.id, false);
+      hub.prompt(s.id, shouldStall ? 'stall-after-approval' : 'effectue la modification', { agent: 'permission' });
+      const permission = await waitFor(() => hub.snapshot(s.id).items.find((item: any) => item.type === 'permission'));
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      const waiting = hub.snapshot(s.id);
+      assert.equal(waiting.state.waiting, true);
+      assert.equal(hub.jobs(s.id)[0].status, 'running', 'human approval must not consume the agent inactivity deadline');
+      hub.respondPermission(s.id, permission.id, 'yes');
+      await waitIdle(s.id);
+      const job = hub.jobs(s.id)[0];
+      assert.equal(job.status, shouldStall ? 'error' : 'done', job.error ?? JSON.stringify(job.result));
+      if (shouldStall) assert.match(job.error, /bloqué|délai ACP/);
+      else assert.match(hub.snapshot(s.id).items.find((item: any) => item.type === 'assistant').text, /Travail terminé/);
+    }
+  } finally {
+    for (const id of sessions) hub.cancel(id);
+    config.stallTimeoutMs = previous; delete config.agents.permission;
+  }
+});
+
+test('ACP: a request timeout disconnects the session and the next turn reconnects', async () => {
+  const fixture = join(home, 'timeout-agent.mjs');
+  writeFileSync(fixture, `
+    import { createInterface } from 'node:readline';
+    const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const m = JSON.parse(line);
+      if (m.method === 'initialize') return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      if (m.method === 'session/new') return send({ id: m.id, result: { sessionId: 'timeout-fixture' } });
+      if (m.method === 'session/prompt') {
+        send({ method: 'session/update', params: { sessionId: 'timeout-fixture', update: {
+          sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Réponse' }
+        } } });
+        send({ id: m.id, result: { stopReason: 'end_turn' } });
+      }
+    });
+  `);
+  config.agents.timeout = { name: 'Timeout', cmd: process.execPath, args: [fixture], strengths: '' };
+  const previous = config.agentTimeoutMs;
+  const p = await hub.createProject({ name: 'timeout-reconnect' }), s = hub.createSession(p.id);
+  try {
+    hub.prompt(s.id, 'première réponse', { agent: 'timeout' }); await waitIdle(s.id);
+    assert.equal(hub.jobs(s.id)[0].status, 'done');
+    const pid = hub.get(s.id).a!.conn.proc.pid;
+    config.agentTimeoutMs = 100;
+    await assert.rejects(hub.setConfig(s.id, 'model', 'ignored'), /délai ACP/);
+    assert.equal(hub.snapshot(s.id).state.connected, false, 'a timed-out ACP process must not stay connected');
+    config.agentTimeoutMs = previous;
+    hub.prompt(s.id, 'nouvelle réponse'); await waitIdle(s.id);
+    assert.deepEqual(hub.jobs(s.id).map((job) => job.status), ['done', 'done']);
+    assert.notEqual(hub.get(s.id).a!.conn.proc.pid, pid);
+  } finally {
+    hub.cancel(s.id); config.agentTimeoutMs = previous; delete config.agents.timeout;
+  }
 });
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -833,6 +926,30 @@ test('speech: configurable engine receives isolated recording and selected langu
     await assert.rejects(() => transcribe({ mime: 'audio/webm', language: 'bad;command', base64: 'YQ==' }), /Langue/);
   } finally { cfg.transcription = before; }
 });
+test('dictée locale : CPU hors ligne, langue régionale et erreurs du modèle', async (t) => {
+  const { which } = await import('../src/config.ts');
+  const python = which('python3');
+  if (!python) { t.skip('Python 3 requis uniquement pour vérifier le moteur de dictée optionnel'); return; }
+  const { transcribe } = await import('../src/speech.ts');
+  const previous = config.transcription, pythonPath = process.env.PYTHONPATH;
+  const model = join(home, 'test-whisper-model');
+  mkdirSync(model);
+  writeFileSync(join(model, 'model.bin'), 'fake model');
+  process.env.PYTHONPATH = fileURLToPath(new URL('./fake-whisper', import.meta.url));
+  try {
+    config.transcription = { command: python, args: ['-B', fileURLToPath(new URL('../deploy/transcribe.py', import.meta.url)),
+      '--file', '{file}', '--language', '{language}', '--model', model, '--threads', '2'] };
+    const input = { mime: 'audio/webm', language: 'fr-FR', base64: Buffer.from('fake-audio').toString('base64') };
+    assert.equal((await transcribe(input)).text, 'Bonjour en français. Deuxième phrase.');
+    const concurrent = await Promise.all([transcribe(input), transcribe(input)]);
+    assert.equal(concurrent.length, 2, 'les chargements concurrents du modèle sont sérialisés');
+    unlinkSync(join(model, 'model.bin'));
+    await assert.rejects(() => transcribe(input), /moteur de transcription/);
+  } finally {
+    config.transcription = previous;
+    if (pythonPath === undefined) delete process.env.PYTHONPATH; else process.env.PYTHONPATH = pythonPath;
+  }
+});
 test('administration: configuration validée, secrets préservés et rotation persistante', async () => {
   const { publicConfig, updateConfig, rotateToken } = await import('../src/config.ts');
   const saved = structuredClone(config);
@@ -1237,4 +1354,94 @@ test('restauration: un échec COMMIT rétablit aussi les octets des pièces join
     assert.equal(readFileSync(file, 'utf8'), 'état courant');
     assert.equal(one('SELECT count(*) AS n FROM restore_child')!.n, 0);
   } finally { db.exec('PRAGMA foreign_keys=OFF; DROP TABLE restore_child; DROP TABLE restore_parent'); }
+});
+
+test('sources de quotas: fenêtres réelles, sélection du bucket et crédits sans faux épuisement', () => {
+  const now = Date.now(), soon = Math.ceil(now / 1000) + 3600, later = soon + 86400;
+  const bucket = { limitId: 'codex', primary: { usedPercent: 80, windowDurationMins: 300, resetsAt: soon }, secondary: { usedPercent: 30, windowDurationMins: 10080, resetsAt: later } };
+  const codex = { rateLimits: { primary: { usedPercent: 99 } }, rateLimitsByLimitId: { codex: bucket } };
+  assert.deepEqual(normalizeCodexQuota(codex, 'codex', now), { remaining: 20, limit: 100, unit: 'pourcentage restant (Codex 300 min)', resetAt: new Date(soon * 1000).toISOString() });
+  assert.throws(() => normalizeCodexQuota(codex, 'missing'), /absent/);
+  assert.throws(() => normalizeCodexQuota({ rateLimitsByLimitId: {}, rateLimits: bucket }), /absent/, 'pas de fallback silencieux vers un bucket différent');
+  bucket.primary.usedPercent = bucket.secondary.usedPercent = 100;
+  assert.equal(normalizeCodexQuota(codex).resetAt, new Date(later * 1000).toISOString());
+  assert.equal(normalizeCodexQuota(codex).remaining, 0);
+  for (const credits of [{ hasCredits: true }, { unlimited: true }]) assert.throws(() => normalizeCodexQuota({ rateLimits: { ...bucket, credits } }), /crédits supplémentaires/);
+  for (const usedPercent of [null, '10', -1, 101, NaN]) assert.throws(() => normalizeCodexQuota({ rateLimits: { primary: { usedPercent } } }), /invalide/);
+  assert.throws(() => normalizeCodexQuota({ rateLimits: { primary: { usedPercent: 10, resetsAt: 1 } } }), /périmée/);
+  assert.throws(() => normalizeCodexQuota({ rateLimits: {} }), /aucune fenêtre/);
+  const claude = { five_hour: { utilization: 4, resets_at: new Date(soon * 1000).toISOString() }, seven_day: { utilization: 34, resets_at: new Date(later * 1000).toISOString() }, seven_day_sonnet: { utilization: 85, resets_at: new Date(later * 1000).toISOString() } };
+  assert.equal(normalizeClaudeQuota(claude).remaining, 66);
+  assert.equal(normalizeClaudeQuota(claude, 'sonnet').remaining, 15);
+  assert.throws(() => normalizeClaudeQuota(claude, 'missing'), /invalide/);
+  assert.throws(() => normalizeClaudeQuota({ five_hour: { utilization: 100 }, extra_usage: { is_enabled: true } }), /crédits supplémentaires/);
+  assert.throws(() => normalizeClaudeQuota({ five_hour: { utilization: null } }), /invalide/);
+});
+
+test('source Codex: protocole natif simulé, erreurs expurgées, sortie bornée et timeout', async () => {
+  const fixture = fileURLToPath(new URL('./provider-quota.mjs', import.meta.url));
+  const read = (mode: string, timeoutMs = 1000) => readCodexQuota({ cmd: process.execPath, args: [fixture, mode], timeoutMs });
+  const result = await read('valid');
+  assert.equal(result.remaining, 20);
+  assert.equal(result.limit, 100);
+  assert.match(result.unit, /10080 min/);
+  for (const [mode, error] of [['error', /connexion ChatGPT/], ['oversized', /volumineuse/], ['malformed', /invalide/]] as const) {
+    await assert.rejects(read(mode), (e: Error) => error.test(e.message) && !e.message.includes('synthetic-secret'));
+  }
+  const start = performance.now();
+  await assert.rejects(read('hang', 50), /expirée/);
+  assert.ok(performance.now() - start < 1500);
+  await assert.rejects(readCodexQuota({ cmd: join(home, 'missing-quota-cli'), timeoutMs: 100 }), /indisponible/);
+  if (process.platform !== 'win32') {
+    const pidFile = join(home, 'quota-child.pid');
+    await assert.rejects(readCodexQuota({ cmd: process.execPath, args: [fixture, 'hang-child', pidFile], timeoutMs: 500 }), /expirée/);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    let running = true;
+    for (let attempt = 0; attempt < 20 && running; attempt++) {
+      try { process.kill(pid, 0); if (process.platform === 'linux' && readFileSync(`/proc/${pid}/stat`, 'utf8').includes(') Z ')) running = false; }
+      catch { running = false; }
+      if (running) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    if (running) process.kill(pid, 'SIGKILL');
+    assert.equal(running, false, 'le binaire natif enfant doit aussi être arrêté');
+  }
+});
+
+test('source Claude: identifiants locaux, endpoint fixe, lecture bornée et erreurs sans secret', async () => {
+  const credentialsPath = join(home, 'claude-quota-credentials.json');
+  writeFileSync(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: 'synthetic-quota-token', expiresAt: Date.now() + 60000 } }), { mode: 0o600 });
+  let called = 0;
+  const fetcher: typeof fetch = async (url, init) => {
+    called++;
+    assert.equal(String(url), 'https://api.anthropic.com/api/oauth/usage');
+    assert.equal(init?.redirect, 'error');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer synthetic-quota-token');
+    assert.equal(new Headers(init?.headers).get('anthropic-beta'), 'oauth-2025-04-20');
+    return Response.json({ five_hour: { utilization: 2, resets_at: new Date(Date.now() + 60000).toISOString() } });
+  };
+  assert.equal((await readClaudeQuota({ credentialsPath, fetcher })).remaining, 98);
+  assert.equal(called, 1);
+  for (const status of [401, 403, 429, 500]) {
+    await assert.rejects(readClaudeQuota({ credentialsPath, fetcher: async () => new Response('synthetic-quota-token', { status }) }), (e: Error) => !e.message.includes('synthetic-quota-token') && /Claude/.test(e.message));
+  }
+  await assert.rejects(readClaudeQuota({ credentialsPath, fetcher: async () => new Response('x'.repeat(70_000)) }), /volumineuse/);
+  await assert.rejects(readClaudeQuota({ credentialsPath, fetcher: async () => new Response('synthetic-quota-token') }), (e: Error) => !e.message.includes('synthetic-quota-token'));
+  await assert.rejects(readClaudeQuota({ credentialsPath, timeoutMs: 5, fetcher: async (_url, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('synthetic-quota-token')), { once: true }); setTimeout(() => {}, 10); }) }), /impossible ou expirée/);
+  writeFileSync(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: 'synthetic-quota-token', expiresAt: 1 } }));
+  await assert.rejects(readClaudeQuota({ credentialsPath, fetcher }), /expirée/);
+  assert.equal(called, 1, 'aucun appel réseau avec une connexion expirée');
+  await assert.rejects(readClaudeQuota({ credentialsPath: join(home, 'missing-credentials'), fetcher }), /absente ou illisible/);
+});
+
+test('sources de quotas: Cursor et OpenCode restent explicitement inconnus', () => {
+  const script = fileURLToPath(new URL('../src/quota-source.ts', import.meta.url));
+  for (const provider of ['cursor', 'opencode']) {
+    try { execFileSync(process.execPath, [script, provider], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); assert.fail('source non disponible acceptée'); }
+    catch (e: any) {
+      assert.equal(e.status, 1);
+      assert.equal(e.stdout, '');
+      assert.equal(JSON.parse(e.stderr).status, 'unknown');
+      assert.match(JSON.parse(e.stderr).error, /non prise en charge/);
+    }
+  }
 });

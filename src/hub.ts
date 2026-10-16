@@ -308,8 +308,9 @@ export class Hub {
 
   private drop(L: Live) {
     if (!L.a) return;
-    L.a.conn.kill();
+    const a = L.a;
     L.a = null;
+    a.conn.kill();
     this.cancelPending(L);
   }
 
@@ -377,6 +378,7 @@ export class Hub {
     this.syncChild(L, 'waiting');
     const answer = new Promise<Json>((resolve) => L.pending.set(item.id, (optionId) => {
       L.pending.delete(item.id);
+      L.activityAt = Date.now();
       this.syncChild(L, 'running');
       const opt = opts.find((o) => o.optionId === optionId);
       item.resolved = opt?.name ?? 'annulé';

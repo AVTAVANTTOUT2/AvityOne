@@ -151,6 +151,8 @@ La dictée propose français, anglais, espagnol, allemand, italien et portugais.
 native si elle existe. Sinon, configure `transcription.command` et `transcription.args` : `{file}` est remplacé par le chemin
 de l'enregistrement temporaire, `{language}` par la langue choisie. La commande doit écrire uniquement le texte reconnu
 sur sa sortie standard ; elle dispose de 120 secondes. Aucun moteur STT ni service payant n'est choisi automatiquement.
+Le [guide de dictée locale](docs/dictee.md) fournit une installation CPU de faster-whisper, isolée du serveur Node,
+avec modèle multilingue et configuration de la commande.
 
 ### Exploitation et limites
 
@@ -230,7 +232,8 @@ objet JSON `{ "remaining": 100, "limit": 200, "unit": "requêtes", "resetAt": "2
 à `remaining`. La commande est limitée à 5 secondes et 64 Kio de sortie. La mesure expire après 5 minutes, à la date
 de remise à zéro ou après modification de la source. Un quota frais épuisé bloque les nouveaux prompts ; absence de
 source, erreur ou mesure expirée donnent **inconnu**. Le raccordement et l'exactitude de cette commande dépendent du
-fournisseur : AvityOne ne déduit pas son quota des tokens facturés et n'inclut pas un connecteur pour chaque CLI.
+fournisseur : AvityOne ne déduit pas son quota des tokens facturés. Les [sources fournies](docs/quotas.md) raccordent
+Codex et Claude à leurs mesures de compte ; Cursor et OpenCode restent inconnus sans source fournisseur fiable.
 
 ## Développement
 
