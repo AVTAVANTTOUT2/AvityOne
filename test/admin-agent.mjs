@@ -21,7 +21,8 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
   if (m.method === 'session/prompt') {
     const text = m.params.prompt.map((p) => p.text ?? '').join('\n');
     if (text.includes('WAIT')) await new Promise((resolve) => setTimeout(resolve, 150));
-    const answer = text.startsWith('Choisis l\'agent') ? '{"agent":"fake2","mode":"plan"}' : text.includes('ECHO_MCP') ? JSON.stringify(servers) : 'résultat attendu';
+    const answer = text.startsWith('Choisis l\'agent') ? '{"agent":"fake2","mode":"plan"}' : text.includes('ECHO_MCP') ? JSON.stringify(servers)
+      : text.includes('ECHO_CWD') ? process.cwd() : 'résultat attendu';
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: answer } });
     cost += 0.02;
     update({ sessionUpdate: 'usage_update', used: 42, size: 1000, cost: { amount: cost, currency: 'USD' } });

@@ -115,6 +115,13 @@ versions selon [SemVer](https://semver.org/lang/fr/). Les fonctions à venir son
 
 ### Corrigé
 
+- La fusion d'un worktree n'est plus impossible avec un seul agent installé : il relit alors son propre travail.
+- Un document importé (`.avity/imports/`) ou un brief édité dans l'atelier ne bloque plus la fusion : tout `.avity/`
+  est exclu du `git status` du projet, y compris dans les dépôts préparés par une version précédente.
+- Un verdict de revue entouré de texte ou d'un bloc de code est accepté ; seule une revue défavorable bloque la fusion
+  et laisse des remarques à justifier, les remarques mineures restent lisibles dans la revue.
+- L'évaluation comparative lance chaque agent dans un dossier temporaire vide, et non plus dans `~/.avityone`
+  (jeton, conversations).
 - L'actualisation des agents remplace le résultat affiché au lieu de conserver un ancien quota en cache local.
 - Les explications de quota masquent également les secrets placés dans les arguments de commande.
 - L'attente d'une autorisation humaine suspend les délais d'inactivité ACP ; la reprise repart avec un délai complet.

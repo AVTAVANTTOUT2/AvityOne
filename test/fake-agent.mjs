@@ -26,8 +26,11 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     case 'session/prompt': {
       const text = m.params.prompt.map((b) => b.text).join('\n');
       if (text.includes('Tu es relecteur senior')) {
-        const result = text.includes('review-fail') ? { approved: false, findings: [{ path: 'a.txt:1', message: 'Corriger la valeur review-fail' }] } : { approved: true, findings: [] };
-        up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(result) } });
+        const result = text.includes('review-fail') ? { approved: false, findings: [{ path: 'a.txt:1', message: 'Corriger la valeur review-fail' }] }
+          : text.includes('review-minor') ? { approved: true, findings: [{ path: 'a.txt:1', message: 'Nommer la valeur' }] } : { approved: true, findings: [] };
+        // « review-minor »: a real agent's habit of wrapping its verdict in prose and a code fence.
+        const verdict = text.includes('review-minor') ? `Voici mon verdict.\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\nRien de bloquant.` : JSON.stringify(result);
+        up({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: verdict } });
         return reply({ stopReason: 'end_turn' });
       }
       if (text.includes('<transcript>')) { // AvityOne's memory module: answer with a summary that names the session

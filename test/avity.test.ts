@@ -612,6 +612,44 @@ test('merge: conflict aborts the complete selection and preserves every worktree
   assert.ok(card.children.every((k: any) => existsSync(hub.snapshot(k.id).state.worktree!)));
 });
 
+test('merge: a lone installed agent reviews its own work instead of blocking the merge', async () => {
+  const repo = gitRepo(), p = await hub.createProject({ name: 'solo', path: repo });
+  const s = hub.createSession(p.id, undefined, { isolated: true });
+  hub.prompt(s.id, '## Ta tâche\nwrite:a.txt'); await waitIdle(s.id);
+  const other = config.agents.fake2;
+  delete config.agents.fake2;
+  try {
+    assert.deepEqual(await hub.merge(s.id), { merged: 1, failed: 0 });
+    assert.equal(hub.snapshot(s.id).items.find((i: any) => i.type === 'review').agent, 'fake');
+    assert.ok(existsSync(join(repo, 'a.txt')));
+  } finally { config.agents.fake2 = other; }
+});
+
+test('merge: documents and brief stored under .avity/ never block the merge, even with an older exclude', async () => {
+  const repo = gitRepo(), p = await hub.createProject({ name: 'avity-files', path: repo });
+  const s = hub.createSession(p.id, undefined, { isolated: true });
+  hub.prompt(s.id, '## Ta tâche\nwrite:a.txt'); await waitIdle(s.id);
+  importDocument(p.id, { name: 'note.md', base64: Buffer.from('# Note importée\n').toString('base64') });
+  updateProject(p.id, { brief: 'Brief du projet' });
+  writeFileSync(join(repo, '.git', 'info', 'exclude'), '.avity/worktrees/\n'); // as written before .avity/ was excluded whole
+  assert.deepEqual(await hub.merge(s.id), { merged: 1, failed: 0 });
+  assert.equal(git(repo, 'status', '--porcelain'), '');
+  assert.ok(existsSync(join(repo, '.avity', 'brief.md')) && existsSync(join(repo, 'a.txt')));
+});
+
+test('merge: a verdict wrapped in prose passes and minor remarks leave nothing to resolve', async () => {
+  const repo = gitRepo(), p = await hub.createProject({ name: 'verdict', path: repo });
+  const s = hub.createSession(p.id, undefined, { isolated: true });
+  hub.prompt(s.id, '## Ta tâche\nwrite:a.txt'); await waitIdle(s.id);
+  writeFileSync(join(hub.snapshot(s.id).state.worktree!, 'a.txt'), 'review-minor\n');
+  assert.deepEqual(await hub.merge(s.id), { merged: 1, failed: 0 });
+  const review = hub.snapshot(s.id).items.find((i: any) => i.type === 'review');
+  assert.equal(review.approved, true);
+  assert.match(review.text, /Nommer la valeur/, 'the minor remark stays readable in the review');
+  assert.deepEqual(hub.findings(s.id), [], 'only a rejecting review leaves findings to resolve');
+  assert.equal(readFileSync(join(repo, 'a.txt'), 'utf8'), 'review-minor\n');
+});
+
 test('queue: restart resumes queued work and marks interrupted attempts for explicit retry', () => {
   const restartHome = mkdtempSync(join(tmpdir(), 'avity-restart-'));
   const cfg = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'));
@@ -1265,6 +1303,16 @@ test('comparaison: résultats mesurés et sélection par critère explicite', as
     assert.equal(rankedAgents(['fake', 'evaluated'])[0], 'evaluated');
     const failed = await benchmarkAgents({ agents: ['evaluated'], prompt: 'réponds', expected: 'autre résultat' });
     assert.equal(failed.results[0].passed, 0);
+  } finally { delete config.agents.evaluated; }
+});
+
+test('comparaison: chaque agent travaille dans un dossier temporaire vide, jamais dans AVITY_HOME', async () => {
+  const { benchmarkAgents } = await import('../src/agents.ts');
+  config.agents.evaluated = { name: 'Evaluated', cmd: process.execPath, args: [fileURLToPath(new URL('./admin-agent.mjs', import.meta.url))], strengths: '' };
+  try {
+    const result = await benchmarkAgents({ agents: ['evaluated'], prompt: 'ECHO_CWD', expected: 'avity-bench-' });
+    assert.equal(result.results[0].passed, 1, `dossier de travail : ${result.results[0].answer}`);
+    assert.ok(!existsSync(result.results[0].answer), 'le dossier temporaire est supprimé');
   } finally { delete config.agents.evaluated; }
 });
 
