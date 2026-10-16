@@ -1,11 +1,12 @@
 // Dock: live status pill, plan-ready bar and the composer (voice glow, liquid controls, liquid-metal send).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { VoiceBeam, useMicrophone, type VoiceBeamMotion } from 'voice-glow';
+import { VoiceBeam, getAudioContext, type VoiceBeamMotion } from 'voice-glow';
 import { MetalFx, useMetalBend } from 'metal-fx';
 import { BorderBeam } from 'border-beam';
 import { ThinkingOrb, type OrbState } from 'thinking-orbs';
 import { api, type Agent, type LiveState } from './api';
 import { encodeFile } from './uploads';
+import { Dictation, type DictationState, type SpeechRecognizer } from './dictation';
 import { AgentAvatar } from './brand';
 import { Icon } from './icons';
 import { MetalSafe, PlusMenu, Popover, Segmented, toast } from './ui';
@@ -45,54 +46,42 @@ function useProcessingSweep(active: boolean) {
   }, []);
 }
 
-/** Dictation: voice-glow listens to the mic for the glow, the Web Speech API (where available) writes the words. */
 function useDictation(append: (t: string) => void, language: string) {
-  const mic = useMicrophone();
-  const rec = useRef<any>(null);
-  const mounted = useRef(true), generation = useRef(0);
-  const [transcribing, setTranscribing] = useState(false);
-  const stop = useCallback(() => { rec.current?.stop(); rec.current = null; mic.stop(); }, [mic]);
-  const start = useCallback(async () => {
-    const turn = ++generation.current;
-    const stream = await mic.start();
-    if (!mounted.current || turn !== generation.current) { stream?.getTracks().forEach(t => t.stop()); return; }
-    if (!stream) return toast(mic.state === 'denied' ? 'Micro refusé par le navigateur.' : 'Micro indisponible (HTTPS requis).', true);
-    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-    if (!SR) {
-      if (!window.MediaRecorder) { mic.stop(); return toast('Enregistrement audio indisponible dans ce navigateur.', true); }
-      const type = ['audio/webm', 'audio/mp4', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported(t));
-      const recording = new MediaRecorder(stream, type ? { mimeType: type } : undefined), chunks: Blob[] = [];
-      recording.ondataavailable = e => { if (e.data.size) chunks.push(e.data); if (chunks.reduce((n, b) => n + b.size, 0) > 5 * 1024 * 1024) stop(); };
-      recording.onstop = async () => {
-        mic.stop(); rec.current = null;
-        if (!mounted.current || turn !== generation.current) return;
-        setTranscribing(true);
-        try { const audio = new Blob(chunks, { type: recording.mimeType }); const result = await api('/transcribe', { base64: await encodeFile(audio), mime: recording.mimeType, language }); if (mounted.current && turn === generation.current) append(result.text); }
-        catch (e) { if (mounted.current && turn === generation.current) toast((e as Error).message, true); }
-        finally { if (mounted.current && turn === generation.current) setTranscribing(false); }
-      };
-      recording.onerror = () => { mic.stop(); rec.current = null; toast('Échec de l’enregistrement.', true); };
-      recording.start(1000); rec.current = recording;
-      toast('Enregistrement en cours. Arrête la dictée pour lancer la transcription.');
-      return;
-    }
-    const r = new SR();
-    r.lang = language; r.interimResults = true; r.continuous = true;
-    let committed = '';
-    r.onresult = (e: any) => {
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) committed += e.results[i][0].transcript; else interim += e.results[i][0].transcript;
-      }
-      if (mounted.current && turn === generation.current) append(committed + interim);
-    };
-    r.onend = () => { if (rec.current === r) stop(); };
-    r.start();
-    rec.current = r;
-  }, [mic, append, stop, language]);
-  const cleanup = useRef(stop); cleanup.current = stop;
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; if (rec.current) rec.current.onstop = null; cleanup.current(); }; }, []);
-  return { live: mic.state === 'live', stream: mic.stream, start, stop, transcribing };
+  const [state, setState] = useState<DictationState>({ phase: 'idle', stream: null, audio: null });
+  const controller = useRef<Dictation | null>(null), latest = useRef(append); latest.current = append;
+  const [download, setDownload] = useState('');
+  useEffect(() => {
+    let mounted = true;
+    const browser = window as Window & { SpeechRecognition?: new () => SpeechRecognizer; webkitSpeechRecognition?: new () => SpeechRecognizer };
+    const instance = new Dictation({
+      configured: async (signal) => {
+        const value = await api('/config', undefined, undefined, signal);
+        if (typeof value.transcription?.command !== 'string') throw new Error('Configuration du moteur de dictée indisponible.');
+        return !!value.transcription.command.trim();
+      },
+      microphone: async () => {
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error('Micro indisponible dans ce navigateur (HTTPS requis).');
+        return navigator.mediaDevices.getUserMedia({ audio: true });
+      },
+      recorder: window.MediaRecorder,
+      recognition: browser.SpeechRecognition ?? browser.webkitSpeechRecognition,
+      transcribe: async (audio, selectedLanguage, signal) => {
+        const base64 = await encodeFile(audio);
+        signal.throwIfAborted();
+        return (await api('/transcribe', { base64, mime: audio.type, language: selectedLanguage }, undefined, signal)).text;
+      },
+      state: (value) => { if (mounted) setState(value); }, text: (text) => latest.current(text), notify: toast,
+    });
+    controller.current = instance;
+    return () => { mounted = false; instance.dispose(); controller.current = null; };
+  }, []);
+  useEffect(() => {
+    if (!state.audio) { setDownload(''); return; }
+    const url = URL.createObjectURL(state.audio); setDownload(url);
+    return () => URL.revokeObjectURL(url);
+  }, [state.audio]);
+  const start = () => { try { getAudioContext(); } catch {} void controller.current?.start(language); };
+  return { ...state, live: state.phase === 'recording', starting: state.phase === 'starting', transcribing: state.phase === 'transcribing', download, start, stop: () => controller.current?.stop() };
 }
 
 function useElapsed(busy: boolean) {
@@ -151,14 +140,14 @@ export function Dock({ live, agents, hasSession, ready, planReady, activity, dra
 
   const send = async () => {
     const text = draft.trim() || (files.length ? 'Analyse les pièces jointes.' : '');
-    if (!text || busy || !ready || dictation.transcribing || sending.current || pending) return;
+    if (!text || busy || !ready || dictation.starting || dictation.transcribing || sending.current || pending) return;
     if (dictation.live) { dictation.stop(); return; }
     sending.current = true; setUploading(true);
     try { if (await act.send(text, agent, mode, files) && mounted.current) setFiles([]); }
     finally { sending.current = false; if (mounted.current) setUploading(false); }
   };
   const toggleMic = () => {
-    if (dictation.live) return dictation.stop();
+    if (dictation.phase !== 'idle') return dictation.stop();
     base.current = draft ? draft.replace(/\s*$/, ' ') : '';
     dictation.start();
   };
@@ -209,7 +198,7 @@ export function Dock({ live, agents, hasSession, ready, planReady, activity, dra
           <div className="composer" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); addFiles(Array.from(e.dataTransfer.files)); }}>
             {!!files.length && <div className="attachments">{files.map((f, i) => <button className="chip" key={`${f.name}-${i}`} onClick={() => setFiles(files.filter((_, n) => n !== i))} title="Retirer la pièce jointe">{f.name} ×</button>)}</div>}
             {draft.startsWith('/') && !draft.includes(' ') && commands.length > 0 && <div className="attachments" aria-label="Commandes natives">{commands.filter(c => ('/' + c.name).startsWith(draft)).slice(0, 8).map(c => <button key={c.name} className="chip" title={c.description} onClick={() => setDraft('/' + c.name + ' ')}>/{c.name}</button>)}</div>}
-            <textarea ref={area} rows={1} value={draft} disabled={!ready || dictation.transcribing || dictation.live || uploading || pending} aria-label="Message" enterKeyHint="send"
+            <textarea ref={area} rows={1} value={draft} disabled={!ready || dictation.phase !== 'idle' || uploading || pending} aria-label="Message" enterKeyHint="send"
               placeholder={!ready ? 'Choisis ou crée un projet' : hasSession ? 'Demande quelque chose… (@agent pour forcer, /plan pour planifier)' : 'Demande quelque chose : une session s\'ouvre à l\'envoi'}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -251,12 +240,12 @@ export function Dock({ live, agents, hasSession, ready, planReady, activity, dra
                 </Popover>
                 <div className="seg-wrap"><Segmented label="Mode" value={mode} options={MODES} onChange={setMode} /></div>
               </div>
-              <button ref={micRef} className={`chip icon mic ${dictation.live ? 'live' : ''}`} onClick={toggleMic} disabled={!ready || dictation.transcribing}
-                title={dictation.live ? 'Arrêter la dictée' : 'Dicter'} aria-label="Dictée vocale" aria-pressed={dictation.live}><Icon name="mic" size={16} /></button>
-              <select className="select" style={{ maxWidth: 72 }} aria-label="Langue de dictée" value={language} disabled={dictation.live} onChange={e => setLanguage(e.target.value)}><option value="fr-FR">FR</option><option value="en-US">EN</option><option value="es-ES">ES</option><option value="de-DE">DE</option><option value="it-IT">IT</option><option value="pt-PT">PT</option></select>
+              <button ref={micRef} className={`chip icon mic ${dictation.live ? 'live' : ''}`} onClick={toggleMic} disabled={!ready || uploading || pending}
+                title={dictation.live ? 'Arrêter la dictée' : dictation.starting ? 'Annuler l’activation du micro' : dictation.transcribing ? 'Annuler la transcription' : 'Dicter'} aria-label="Dictée vocale" aria-pressed={dictation.phase !== 'idle'}><Icon name="mic" size={16} /></button>
+              <select className="select" style={{ maxWidth: 72 }} aria-label="Langue de dictée" value={language} disabled={dictation.phase !== 'idle'} onChange={e => setLanguage(e.target.value)}><option value="fr-FR">FR</option><option value="en-US">EN</option><option value="es-ES">ES</option><option value="de-DE">DE</option><option value="it-IT">IT</option><option value="pt-PT">PT</option></select>
               {(() => {
                 const btn = (
-                  <button ref={sendRef} className="send" onClick={busy ? act.stop : send} disabled={!ready || dictation.transcribing || uploading || pending || (!busy && !draft.trim() && !files.length)}
+                  <button ref={sendRef} className="send" onClick={busy ? act.stop : send} disabled={!ready || dictation.starting || dictation.transcribing || uploading || pending || (!busy && !draft.trim() && !files.length)}
                     aria-label={busy ? 'Arrêter' : 'Envoyer'} title={busy ? 'Arrêter (Échap)' : 'Envoyer (Entrée)'}>
                     <Icon name={busy ? 'stop' : 'send'} size={17} strokeWidth={2.2} />
                   </button>
@@ -267,6 +256,8 @@ export function Dock({ live, agents, hasSession, ready, planReady, activity, dra
           </div>
         </VoiceBeam>
         {dictation.transcribing && <p role="status">Transcription en cours…</p>}
+        {dictation.starting && <p role="status">Activation du microphone…</p>}
+        {dictation.download && <a className="chip" href={dictation.download} download={`dictee.${dictation.audio?.type.includes('mp4') ? 'm4a' : dictation.audio?.type.includes('ogg') ? 'ogg' : dictation.audio?.type.includes('wav') ? 'wav' : 'webm'}`}>Télécharger l’enregistrement</a>}
         <div className="hint hide-mobile"><span><span className="kbd">↵</span> envoyer</span><span><span className="kbd">⇧↵</span> nouvelle ligne</span><span><span className="kbd">@codex</span> forcer un agent</span><span><span className="kbd">/plan</span> planifier</span></div>
       </div>
     </div>

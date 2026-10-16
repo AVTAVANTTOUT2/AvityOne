@@ -42,10 +42,10 @@ pilote par le protocole standard qu'ils parlent tous, l'[Agent Client Protocol](
 | **Espace de travail** | Explorateur et éditeur de fichiers, terminal avec entrée/sortie, diffs avant/après staging, sélection ou annulation par fichier/bloc et export du contexte du dépôt pour revue. Les chemins restent dans l'espace du projet ou de son worktree. |
 | **Projets** | Recherche, renommage, archivage, retrait sans effacer les fichiers, sélecteur de dossiers du serveur, édition du brief et de `AGENTS.md`. |
 | **Fichiers et médias** | Pièces jointes par sélection ou glisser-déposer, blocs ACP image/audio/ressource et rendu des réponses multimédias. Les pièces suivent la modification, la régénération et la bifurcation des conversations. |
-| **Mobile et dictée** | PWA installable, options d'agent et exécution parallèle sur mobile, six langues de dictée. En l'absence de reconnaissance native, l'enregistrement est transmis au moteur configuré sur le serveur. |
+| **Mobile et dictée** | PWA installable, options d'agent et exécution parallèle sur mobile, six langues de dictée. Le moteur configuré sur le serveur est prioritaire ; le repli vers la reconnaissance du navigateur est annoncé lorsqu'aucun moteur n'est configuré. |
 | **Administration** | Configuration, déconnexion, rotation du jeton, accès HTTPS via Tailscale, sauvegarde/restauration, métriques rapportées par les agents, budgets locaux, quotas issus d'une source configurée, traces et évaluations comparatives. |
 | **UI premium** | React + [libraries.dev](https://libraries.dev) (thème et effets, voir ci-dessous) : projets et sessions, flux en streaming (messages, réflexions, outils animés, diffs, plans, permissions), sélecteurs modèle/effort exposés par chaque agent, dictée vocale, panneau mémoire et aperçu du contexte injecté. Utilisable sur mobile. |
-| **Sessions** | Renommer, épingler, dupliquer, archiver, supprimer (menu « ⋯ » de l'en-tête). Bifurquer depuis n'importe quelle réponse, modifier et renvoyer un message, régénérer la dernière réponse (même agent ou un autre), copier un message, une réponse ou un bloc de code. Recherche plein texte dans toutes les conversations du projet, avec saut au message trouvé. Export Markdown. Un brouillon par session, conservé sur le serveur. Alt+↑ / Alt+↓ et l'historique du navigateur pour passer d'une session à l'autre. |
+| **Sessions** | Renommer, épingler, dupliquer, archiver, supprimer (menu « ⋯ » de l'en-tête). Bifurquer depuis n'importe quelle réponse, modifier et renvoyer un message, régénérer la dernière réponse (même agent ou un autre), copier un message, une réponse ou un bloc de code. Recherche plein texte dans toutes les conversations du projet, avec saut au message trouvé. Export Markdown. Un brouillon par session, conservé sur le serveur. Alt+↑ / Alt+↓ et l'historique du navigateur pour passer d'une session à l'autre ; les raccourcis sont suspendus lorsqu'un dialogue est ouvert. |
 | **Activité et notifications** | Pastilles d'activité par session et par projet (en cours, validation requise, terminé ou échoué sans avoir été vu), compteur dans le titre de l'onglet, toasts et notifications système (cloche de l'en-tête, HTTPS ou localhost) de fin, d'échec et d'autorisation en attente. Bandeau de déconnexion avec reconnexion et resynchronisation automatiques. Les erreurs de chargement du contexte et de la mémoire sont signalées dans la session et les panneaux. |
 | **Permissions** | Auto-approbation configurable. La validation de plan et les éditions en mode plan te reviennent toujours. |
 
@@ -147,12 +147,20 @@ Les pièces jointes de conversation sont limitées à **8 fichiers de 5 Mio maxi
 l'audio et les ressources sont envoyés dans leur format ACP ; leur exploitation dépend des capacités de l'agent choisi.
 Lors d'une reprise avec un agent neuf, au plus huit blocs multimédias historiques récents accompagnent le transcript.
 
-La dictée propose français, anglais, espagnol, allemand, italien et portugais. Le navigateur utilise sa reconnaissance
-native si elle existe. Sinon, configure `transcription.command` et `transcription.args` : `{file}` est remplacé par le chemin
+La dictée propose français, anglais, espagnol, allemand, italien et portugais. Le moteur serveur configuré est prioritaire,
+même si le navigateur dispose d'une reconnaissance native. Configure `transcription.command` et `transcription.args` : `{file}` est remplacé par le chemin
 de l'enregistrement temporaire, `{language}` par la langue choisie. La commande doit écrire uniquement le texte reconnu
-sur sa sortie standard ; elle dispose de 120 secondes. Aucun moteur STT ni service payant n'est choisi automatiquement.
+sur sa sortie standard ; elle dispose de 120 secondes. Sans commande configurée, la reconnaissance native disponible
+est annoncée avant l'activation du micro ; elle peut transmettre l'audio au fournisseur du navigateur. Un échec de
+configuration ou de transcription serveur n'entraîne pas de repli silencieux vers ce service.
 Le [guide de dictée locale](docs/dictee.md) fournit une installation CPU de faster-whisper, isolée du serveur Node,
 avec modèle multilingue et configuration de la commande.
+
+Clique de nouveau sur le micro pour arrêter l'enregistrement, annuler son activation ou annuler une transcription
+en cours. Un changement de session libère aussi le micro et ignore les résultats tardifs. L'enregistrement s'arrête
+dès 4 Mio pour laisser de la place au dernier fragment ; le serveur accepte au plus 5 Mio. Le lien « Télécharger
+l'enregistrement » permet de conserver l'audio, notamment après une erreur ou un dépassement. Cet audio reste dans
+le navigateur jusqu'à la prochaine dictée, au changement de session ou au rechargement ; télécharge-le pour le garder.
 
 ### Exploitation et limites
 
@@ -196,6 +204,10 @@ Sans WebGL matériel (GPU absent ou désactivé, rendu logiciel), l'interface re
 
 ## Configuration
 
+Dans Administration → Configuration, le brouillon JSON est conservé entre les onglets. Une fermeture avec des
+modifications non enregistrées demande confirmation. Si cette fenêtre reçoit une configuration plus récente,
+elle signale le conflit et conserve le brouillon jusqu'à une reprise explicite de la version enregistrée.
+
 `~/.avityone/config.json` (ou `$AVITY_HOME/config.json`) surcharge les valeurs de [`src/config.ts`](src/config.ts).
 Le jeton aléatoire est créé au premier lancement. **Administration → Configuration** permet de modifier les options
 validées ; les valeurs sensibles sont masquées. Un changement d'adresse ou de port nécessite un redémarrage.
@@ -237,6 +249,12 @@ Codex, Claude et Cursor à leurs mesures de compte. Cursor détaille ses différ
 la source vérifie le modèle global et explique l'absence de plafond publié lorsque l'accès est anonyme gratuit.
 Les réponses peuvent fournir `details`, ou `status: "unknown"` avec `remaining` et `limit` nuls et une `reason` explicite.
 
+Dans Administration → Agents, chaque carte sépare l'état de connexion de celui du quota : **disponible**, **épuisé**,
+**inconnu** ou **expiré**. Elle affiche la date de mesure, la remise à zéro annoncée et les explications du fournisseur.
+Les valeurs absentes ou expirées ne sont pas présentées comme un solde nul ; un petit pourcentage positif reste
+affiché « < 0,1 » au lieu d'être arrondi à zéro. Le bouton « Vérifier connexion et quota » indique l'attente et les
+erreurs, sans multiplier les demandes simultanées pour un même agent. Les détails techniques restent repliables.
+
 ## Développement
 
 ```bash
@@ -273,7 +291,7 @@ l'administration. Avant un commit : `npm run check && npm test && npm run build`
 | [`src/mcp.ts`](src/mcp.ts) | Serveur MCP mémoire injecté dans chaque agent |
 | [`src/store.ts`](src/store.ts) | SQLite/FTS5, recherche hybride avec projection LSA et métadonnées des connaissances |
 | [`src/server.ts`](src/server.ts) | API HTTP, SSE, UI statique, auth |
-| [`web/src/`](web/src/) | UI React : `App`, `Feed`, `Composer`, `Sidebar`, `SessionMenu`, `Panel`, `Workbench` (outils), `Administration`, `Media`, `uploads`, `brand`, `icons`, `ui` |
+| [`web/src/`](web/src/) | UI React : `App`, `Feed`, `Composer` et `dictation`, `Sidebar`, `SessionMenu`, `shortcuts`, `Panel`, `Workbench` (outils), `Administration`, `AgentCard` et `agentProbes`, `Media`, `uploads`, `brand`, `icons`, `ui` |
 | [`web/public/`](web/public/) | Manifest PWA, service worker et écran hors ligne sans cache de données privées |
 
 ## Feuille de route et versions
