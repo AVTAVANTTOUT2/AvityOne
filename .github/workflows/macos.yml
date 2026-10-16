@@ -35,6 +35,8 @@ jobs:
         working-directory: macos
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # CFBundleVersion is the commit count
       - uses: actions/setup-node@v5
         with:
           node-version: 24
