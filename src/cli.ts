@@ -4,10 +4,10 @@
 //   avity search <projet> <texte> | avity export <session> > session.md
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
-import { config } from './config.ts';
+import { config, listenAddress } from './config.ts';
 import { readFileSync } from 'node:fs';
 
-const BASE = process.env.AVITY_URL ?? `http://127.0.0.1:${config.port}`;
+const BASE = process.env.AVITY_URL ?? `http://127.0.0.1:${listenAddress().port}`;
 const TOKEN = process.env.AVITY_TOKEN ?? config.token;
 
 async function api(path: string, body?: object, method = body ? 'POST' : 'GET') {

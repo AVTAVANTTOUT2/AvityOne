@@ -1,0 +1,66 @@
+name: macOS
+
+# Application macOS (macos/) et qualification du moteur sur macOS. Le job `ci` (ci.yml) reste la porte de merge.
+on:
+  push:
+    paths: ['macos/**', 'src/**', 'test/**', 'package.json', 'package-lock.json', '.github/workflows/macos.yml']
+  pull_request:
+    branches: [preprod, main]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine-macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Poppler pour les tests d'extraction PDF
+        run: brew install --quiet poppler
+      - run: npm test
+
+  app:
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # CFBundleVersion is the commit count
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      # An expression the type checker cannot solve fast fails with its line instead of stalling the build;
+      # the tests reuse the same flags, hence the same build.
+      - name: Build
+        run: swift build $SWIFT_FLAGS
+        env:
+          SWIFT_FLAGS: -Xswiftc -Xfrontend -Xswiftc -solver-expression-time-threshold=20
+      - name: Tests (dont l'intégration avec le moteur réel)
+        env:
+          AVITY_ENGINE_TEST: '1'
+          SWIFT_FLAGS: -Xswiftc -Xfrontend -Xswiftc -solver-expression-time-threshold=20
+        run: swift test $SWIFT_FLAGS
+      - name: AvityOne.app et DMG
+        run: bash scripts/build-app.sh
+      - name: Test de fumée du bundle
+        run: |
+          home="$(mktemp -d)"
+          AVITY_HOME="$home" build/AvityOne.app/Contents/MacOS/AvityOne --smoke-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AvityOne-macOS
+          path: macos/build/AvityOne.dmg
+          if-no-files-found: error

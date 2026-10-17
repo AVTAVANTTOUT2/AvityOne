@@ -21,7 +21,10 @@ const health = new Map<string, Awaited<ReturnType<typeof probeAgent>>>();
 export function agentCatalog() {
   return Object.entries(config.agents).map(([id, a]) => {
     const quotaSnapshot = agentQuota(id);
-    return { id, name: a.name, strengths: a.strengths, installed: !!which(a.cmd), catalog: catalog[id as CatalogId] ?? null,
+    const entry = catalog[id as CatalogId];
+    // `installed` is the ACP adapter; connecting needs the agent's own CLI, which a client may run in a real terminal.
+    return { id, name: a.name, strengths: a.strengths, installed: !!which(a.cmd),
+      catalog: entry ? { ...entry, commandInstalled: !!which(entry.command), loginCommand: [entry.command, ...entry.login] } : null,
       health: { ...(health.get(id) ?? { status: 'unknown', authentication: 'unknown' }), quota: quotaSnapshot.status, quotaSnapshot } };
   });
 }
