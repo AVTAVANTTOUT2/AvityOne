@@ -3,3 +3,6 @@ node_modules/
 *.db
 *.db-*
 web/dist/
+macos/.build/
+macos/build/
+macos/.swiftpm/

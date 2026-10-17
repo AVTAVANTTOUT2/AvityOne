@@ -4,11 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { join, normalize, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
-import { config, availableAgents, publicConfig, updateConfig, rotateToken } from './config.ts';
+import { config, availableAgents, publicConfig, updateConfig, rotateToken, listenAddress } from './config.ts';
 import { all, one, run, searchMemory, searchKb, addMemory, searchHistory } from './store.ts';
 import { hub, httpError } from './hub.ts';
 import { indexProject, buildPack, summarize, exportMarkdown } from './context.ts';
-import { listFiles, readWorkspaceFile, writeWorkspaceFile, workspaceDiff, selectChange, repositoryContext, openTerminal, readTerminal, writeTerminal, closeTerminal, closeTerminals } from './workspace.ts';
+import { listFiles, readWorkspaceFile, writeWorkspaceFile, workspaceDiff, selectChange, gitStatus, commitChanges, pushBranch, pullRequest, repositoryContext, openTerminal, readTerminal, writeTerminal, closeTerminal, closeTerminals } from './workspace.ts';
 import { addAttachment, attachmentContent, readAttachment } from './attachments.ts';
 import { transcribe } from './speech.ts';
 import { listProjects, updateProject, projectDocuments, listFolders } from './projects.ts';
@@ -127,6 +127,10 @@ const routes: [string, RegExp, Handler][] = [
   ['PUT', new RegExp(`^/api/sessions/${S}/file$`), (m, b) => writeWorkspaceFile(workspace(m[1]), b.path, b.text, b.revision)],
   ['GET', new RegExp(`^/api/sessions/${S}/diff$`), (m, _, u) => workspaceDiff(workspace(m[1]), u.searchParams.get('staged') === '1')],
   ['POST', new RegExp(`^/api/sessions/${S}/changes$`), (m, b) => selectChange(workspace(m[1]), b)],
+  ['GET', new RegExp(`^/api/sessions/${S}/git$`), (m) => gitStatus(workspace(m[1]))],
+  ['POST', new RegExp(`^/api/sessions/${S}/commit$`), (m, b) => commitChanges(workspace(m[1]), b)],
+  ['POST', new RegExp(`^/api/sessions/${S}/push$`), (m) => pushBranch(workspace(m[1]))],
+  ['POST', new RegExp(`^/api/sessions/${S}/pull-request$`), (m, b) => pullRequest(workspace(m[1]), b)],
   ['GET', new RegExp(`^/api/sessions/${S}/repository-context$`), (m) => repositoryContext(workspace(m[1]))],
   ['POST', new RegExp(`^/api/sessions/${S}/terminals$`), (m) => openTerminal(workspace(m[1]))],
   ['GET', new RegExp(`^/api/sessions/${S}/terminals/${S}$`), (m, _, u) => readTerminal(workspace(m[1]), m[2], Number(u.searchParams.get('offset') ?? 0))],
@@ -236,8 +240,12 @@ export const server = createServer(async (req, res) => {
 
 if (fileURLToPath(import.meta.url) === process.argv[1]) {
   if (!all('SELECT 1 FROM projects LIMIT 1').length) await hub.createProject({ name: 'perso' }).catch((e) => console.error('projet par défaut:', e.message));
-  server.listen(config.port, config.host, () => {
-    console.log(`AvityOne sur http://${config.host}:${config.port} — agents installés: ${availableAgents().join(', ') || 'aucun'}`);
+  const { host, port } = listenAddress();
+  server.listen(port, host, () => {
+    console.log(`AvityOne sur http://${host}:${port} — agents installés: ${availableAgents().join(', ') || 'aucun'}`);
   });
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { hub.shutdown(); closeTerminals(); process.exit(0); });
+  const stop = () => { hub.shutdown(); closeTerminals(); process.exit(0); };
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  // The macOS app holds our stdin: its end, even after a crash, stops the engine and its agents.
+  if (process.env.AVITY_EMBEDDED === '1') process.stdin.on('end', stop).on('error', stop).resume();
 }

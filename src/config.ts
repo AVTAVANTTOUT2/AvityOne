@@ -167,6 +167,13 @@ export function rotateToken() {
   return token;
 }
 
+/** AVITY_HOST/AVITY_PORT (set by the macOS app) win over config.json, without ever being written into it. */
+export function listenAddress() {
+  const port = process.env.AVITY_PORT ? Number(process.env.AVITY_PORT) : config.port;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('AVITY_PORT invalide : entier de 1 à 65535 attendu');
+  return { host: process.env.AVITY_HOST || config.host, port };
+}
+
 export function which(cmd: string): string | null {
   if (cmd.includes('/')) return existsSync(cmd) ? cmd : null;
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {

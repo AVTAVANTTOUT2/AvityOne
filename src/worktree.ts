@@ -34,7 +34,7 @@ export async function addWorktree(root: string, sessionId: string): Promise<stri
 }
 
 // Agents' work is committed as AvityOne unless the machine has a git identity.
-const ident = async (root: string) => ((await git(root, 'config', 'user.email').catch(() => '')) ? [] : ['-c', 'user.name=AvityOne', '-c', 'user.email=avityone@localhost']);
+export const ident = async (root: string) => ((await git(root, 'config', 'user.email').catch(() => '')) ? [] : ['-c', 'user.name=AvityOne', '-c', 'user.email=avityone@localhost']);
 
 export async function removeWorktree(root: string, dir: string, sessionId: string) {
   await git(root, 'worktree', 'remove', '--force', dir);

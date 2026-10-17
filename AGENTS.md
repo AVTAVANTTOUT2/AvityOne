@@ -11,6 +11,8 @@ AvityOne orchestre des agents de code (Claude Code, Codex, Cursor, OpenCode) via
   runtime** : uniquement la bibliothèque standard Node (`node:…`). Données : SQLite + FTS5 dans `~/.avityone/`.
 - **UI** : `web/src/`, React + Vite, compilée dans `web/dist/` (ignoré par git, construit au déploiement).
 - **Tests** : `test/avity.test.ts`, de bout en bout contre un agent ACP simulé (`test/fake-agent.mjs`).
+- **App macOS** : `macos/`, SwiftUI (Swift Package, macOS 14+). Elle embarque Node 24 et `src/`, et pilote ce moteur
+  par la même API HTTP+SSE. Guide : [docs/macos.md](docs/macos.md).
 - Rôle de chaque fichier : tableau « Développement » du [README](README.md).
 
 ## Commandes
@@ -24,12 +26,25 @@ npm run dev        # serveur avec rechargement (:7710)
 npm run dev:web    # UI avec rechargement à chaud (proxy /api vers :7710)
 ```
 
+App macOS (sur un Mac, Xcode 16+) :
+
+```bash
+cd macos
+swift build && swift test                 # AVITY_ENGINE_TEST=1 ajoute l'intégration avec le vrai moteur
+bash scripts/build-app.sh                 # build/AvityOne.app + AvityOne.dmg (signature ad hoc)
+```
+
+Le conteneur Linux des agents ne compile pas SwiftUI : le workflow `macos` (job `app`) est la preuve de compilation.
+
 **Avant chaque commit : `npm run check && npm test && npm run build` doit passer.** C'est exactement ce que fait la CI.
 
 ## Règles de code
 
 - **Serveur sans dépendance** : n'ajoute jamais de paquet utilisé par `src/`. Un paquet n'est accepté que s'il ne sert
   qu'à l'UI ou aux outils de dev, et il va dans `devDependencies`. Commite `package-lock.json` avec `package.json`.
+- **Swift** : les dépendances SwiftPM ne servent qu'à l'interface (SwiftTerm, MarkdownUI), versions exactes dans
+  `macos/Package.swift`. Les modèles du contrat d'API vivent dans `AvityKit` et se testent dans
+  `macos/Tests/AvityKitTests/`. Toute route ou tout événement modifié dans `src/` se répercute dans `AvityKit`.
 - **TypeScript effaçable uniquement** (`erasableSyntaxOnly`) : pas d'`enum`, de `namespace`, de propriétés de
   paramètres de constructeur ni de décorateurs. Utilise des unions de chaînes et des objets `as const`.
 - **Imports** : chemins relatifs avec l'extension `.ts` (`import { config } from './config.ts'`), modules natifs avec

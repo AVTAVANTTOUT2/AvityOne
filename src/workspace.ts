@@ -4,7 +4,8 @@ import { resolve, relative, sep } from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { diffHunks } from './worktree.ts';
+import { diffHunks, ident } from './worktree.ts';
+import { which } from './config.ts';
 
 const exec = promisify(execFile);
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
@@ -63,13 +64,20 @@ export async function workspaceDiff(root: string, staged = false) {
   const args = ['-c', 'core.quotePath=false', 'diff', '--no-renames', '--no-ext-diff', '--no-textconv', ...(staged ? ['--cached'] : [])];
   const diff = await git(root, [...args, '--']);
   const files = (await git(root, [...args, '--name-only', '-z', '--'])).split('\0').filter(Boolean);
-  return { diff, files, hunks: diffHunks(diff), revision: hash(diff), staged };
+  const untracked = staged ? [] : (await git(root, ['-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(p => p && !p.startsWith('.avity/'));
+  return { diff, files, untracked, hunks: diffHunks(diff), revision: hash(diff), staged };
 }
 
 export async function selectChange(root: string, input: { path: string; hunk?: number; action: 'accept' | 'reject'; revision: string; staged?: boolean }) {
   if (!['accept', 'reject'].includes(input.action)) throw fail(400, 'Action inconnue');
   const current = await workspaceDiff(root, !!input.staged);
   if (current.revision !== input.revision) throw fail(409, 'Le diff a changé : recharge-le');
+  // A new file has no hunk to apply: accepting it stages it whole.
+  if (current.untracked.includes(input.path) && input.hunk == null) {
+    if (input.action !== 'accept') throw fail(400, 'Un fichier non suivi ne peut être que sélectionné');
+    await git(root, ['add', '--', input.path]);
+    return workspaceDiff(root);
+  }
   if (!current.files.includes(input.path)) throw fail(400, 'Fichier absent du diff');
   if (input.staged && input.action === 'accept') throw fail(400, 'Modification déjà sélectionnée');
   const diff = await git(root, ['-c', 'core.quotePath=false', 'diff', '--no-renames', '--no-ext-diff', '--no-textconv', ...(input.staged ? ['--cached'] : []), '--', input.path]);
@@ -83,6 +91,53 @@ export async function selectChange(root: string, input: { path: string; hunk?: n
   await git(root, ['apply', '--check', ...flags, '-'], patch);
   await git(root, ['apply', ...flags, '-'], patch);
   return workspaceDiff(root, !!input.staged);
+}
+
+const withoutCredentials = (text: string) => text.replace(/(\w+:\/\/)[^@\s/]+@/g, '$1');
+
+export async function gitStatus(root: string) {
+  if ((await git(root, ['rev-parse', '--is-inside-work-tree']).catch(() => '')).trim() !== 'true') throw fail(409, 'Ce dossier n’est pas un dépôt git');
+  const optional = (args: string[]) => git(root, args).then(s => s.trim() || null, () => null);
+  const branch = await optional(['branch', '--show-current']), upstream = await optional(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  const [behind, ahead] = upstream ? (await git(root, ['rev-list', '--left-right', '--count', `${upstream}...HEAD`])).trim().split(/\s+/).map(Number) : [0, 0];
+  const remote = await optional(['remote', 'get-url', 'origin']);
+  return { branch, head: await optional(['rev-parse', '--verify', '-q', 'HEAD']), upstream, ahead, behind, remote: remote && withoutCredentials(remote),
+    clean: !(await git(root, ['status', '--porcelain'])).trim(), github: !!which('gh') };
+}
+
+export async function commitChanges(root: string, input: { message?: unknown; all?: unknown }) {
+  const message = typeof input.message === 'string' ? input.message.trim() : '';
+  if (!message || message.length > 10_000 || message.includes('\0')) throw fail(400, 'Message de commit requis');
+  await gitStatus(root);
+  if (input.all === true) await git(root, ['add', '-A', '--', '.', ':(exclude).avity']);
+  if (!(await git(root, ['diff', '--cached', '--name-only'])).trim()) throw fail(409, 'Aucune modification sélectionnée à commiter');
+  await git(root, [...await ident(root), 'commit', '-q', '-F', '-'], message);
+  return gitStatus(root);
+}
+
+const remoteCommand = async (root: string, command: string, args: string[], timeout: number) => {
+  try {
+    const { stdout, stderr } = await exec(command, args, { cwd: root, timeout, maxBuffer: 4 << 20, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', NO_COLOR: '1' } });
+    return withoutCredentials(`${stdout}${stderr}`.trim());
+  } catch (e: any) { throw fail(502, `${command} a échoué : ${withoutCredentials(String(e.stderr || e.message)).trim().slice(0, 2000)}`); }
+};
+
+export async function pushBranch(root: string) {
+  const status = await gitStatus(root);
+  if (!status.branch) throw fail(409, 'HEAD détaché : crée une branche avant de pousser');
+  if (!status.remote) throw fail(409, 'Aucun remote « origin » configuré');
+  const output = await remoteCommand(root, 'git', ['push', '-u', 'origin', status.branch], 120_000);
+  return { ...await gitStatus(root), output };
+}
+
+export async function pullRequest(root: string, input: { title?: unknown; body?: unknown }) {
+  const title = typeof input.title === 'string' ? input.title.trim() : '', body = typeof input.body === 'string' ? input.body : '';
+  if (!title || title.length > 300 || body.length > 60_000) throw fail(400, 'Titre de PR requis (300 caractères au plus)');
+  if (!which('gh')) throw fail(409, 'GitHub CLI (gh) introuvable : installe-le puis connecte-le avec « gh auth login »');
+  const status = await gitStatus(root);
+  if (!status.branch || !status.upstream) throw fail(409, 'Pousse la branche avant de créer la PR');
+  const output = await remoteCommand(root, 'gh', ['pr', 'create', '--head', status.branch, '--title', title, '--body', body], 60_000);
+  return { url: output.match(/https:\/\/\S+/g)?.at(-1) ?? null, output };
 }
 
 export async function repositoryContext(root: string) {
